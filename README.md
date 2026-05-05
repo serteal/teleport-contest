@@ -65,6 +65,15 @@ of the early-game PRNG and the first dozen-or-so screens. That's
 your hello world: getting it from "partial" to "full pass," and
 then taking on the other 87 sessions.
 
+To run the scoring script in the "canonical" way, the same way the leaderboard does,
+enable GitHub Actions on your fork and check their output & the artifact they upload!
+They'll catch issues like Node version mismatches and your JS code trying to read the C sources.
+
+Your translated codebase should live entirely in the `js/` directory.
+Think very carefully before modifying any other file!
+In particular, `index.html` and everything in `frozen/` should stay exactly the same.
+Play the skeleton in your browser to make sure the code is not Node-specific!
+
 ## What's in this repo
 
 Three things, layered like the Dungeons of Doom themselves.
@@ -131,6 +140,8 @@ The skeleton is "what works without porting much." Everything beyond
 is yours to build. *Be careful, ahead.*
 
 ### 2. Patches to make C NetHack deterministic
+
+This section is OPTIONAL for participating in the contest.
 
 Your goal is to clone the behavior of NetHack 5.0 exactly. But for
 the contest to score that, the C side has to produce the same output
