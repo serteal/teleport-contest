@@ -44,8 +44,8 @@ Then it compares positionally:
 rendered screen matches C, summed across all sessions. A session
 that diverges at step 50 still earns 50 screen points; you don't
 need to pass the whole session. Across the public corpus
-(44 sessions, 10,982 steps) and the held-out pool (44 sessions,
-10,631 steps), your headline metric is the *total fraction of
+(44 sessions, 11,284 steps) and the held-out pool (44 sessions,
+10,538 steps), your headline metric is the *total fraction of
 matched screens*. PRNG matching is reported alongside as advisory
 progress — it's the structural prerequisite for screens to match,
 but it doesn't earn points on its own. Passing whole sessions

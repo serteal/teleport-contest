@@ -243,7 +243,7 @@ seed0007-rogue-snake-swamp      FAIL  RNG: 391/3706 (10.5%)   div@392
 keystrokes (the recorded input across the 44 public sessions). For
 every one of those keystrokes, can your JS port render the exact
 same 24×80 terminal screen the C reference produced? Each matching
-screen is one point. Public corpus has 10,982 screens — that's your
+screen is one point. Public corpus has 11,284 screens — that's your
 public maximum.
 
 A session that diverges at step 50 still earns 50 screen points;
@@ -309,8 +309,8 @@ Two channels are scored, both required:
 **Scoring is per-step, screens-only.** Your score is the count of
 steps where the captured 24×80 grid matches C's exactly (character +
 color + attribute + cursor position). The 44 public sessions contain
-10,982 steps (max 10,982 points). The 44 held-out pool adds 10,631
-more steps (max 10,631 more) for a global maximum of 21,613 points.
+11,284 steps (max 11,284 points). The 44 held-out pool adds 10,538
+more steps (max 10,538 more) for a global maximum of 21,822 points.
 
 PRNG match is the structural prerequisite — if your PRNG diverges
 from C's, the game state diverges and screens can't match — but
