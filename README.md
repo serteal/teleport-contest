@@ -38,7 +38,7 @@ in the distance.* Let's begin.
    forty-six years of accumulated tradition.
 3. **Push.** GitHub Actions on your fork scores you on every push
    against 44 public sessions — fast feedback in your own Actions
-   minutes. Every six hours, the official judge re-scores the
+   minutes. Every two hours, the official judge re-scores the
    latest commit on every fork against all 88 sessions (44 public
    and 44 held-out) and updates the leaderboard.
 4. **Climb.** Both up the leaderboard, and metaphorically toward
@@ -65,15 +65,6 @@ of the early-game PRNG and the first dozen-or-so screens. That's
 your hello world: getting it from "partial" to "full pass," and
 then taking on the other 87 sessions.
 
-To run the scoring script in the "canonical" way, the same way the leaderboard does,
-enable GitHub Actions on your fork and check their output & the artifact they upload!
-They'll catch issues like Node version mismatches and your JS code trying to read the C sources.
-
-Your translated codebase should live entirely in the `js/` directory.
-Think very carefully before modifying any other file!
-In particular, `index.html` and everything in `frozen/` should stay exactly the same.
-Play the skeleton in your browser to make sure the code is not Node-specific!
-
 ## What's in this repo
 
 Three things, layered like the Dungeons of Doom themselves.
@@ -97,6 +88,7 @@ js/
 ├── jsmain.js          ← contest entry point; exports runSegment
 ├── isaac64.js         ← FROZEN: canonical PRNG engine. Don't touch.
 ├── terminal.js        ← FROZEN: 24×80 grid + serialize(). Don't touch.
+├── storage.js         ← FROZEN: VFS for save/restore + bones. Don't touch.
 ├── rng.js             ← PRNG wrappers (rn2, rnd, d, …). Edit freely.
 ├── fastforward.js     ← Hardcoded RNG-replay scaffolding for seed8000.
 │                        A trap to escape — see below.
@@ -140,8 +132,6 @@ The skeleton is "what works without porting much." Everything beyond
 is yours to build. *Be careful, ahead.*
 
 ### 2. Patches to make C NetHack deterministic
-
-This section is OPTIONAL for participating in the contest.
 
 Your goal is to clone the behavior of NetHack 5.0 exactly. But for
 the contest to score that, the C side has to produce the same output
@@ -249,39 +239,41 @@ seed0007-rogue-snake-swamp      FAIL  RNG: 391/3706 (10.5%)   div@392
 …
 ```
 
-**Scoring is per-step, not per-session.** The 44 public sessions
-contain **10,902 input boundaries** between them; each boundary is a
-"step" the recorder captured. For every step, two independent points
-are scored:
+**The challenge, in one sentence.** You get about 10,000 game
+keystrokes (the recorded input across the 44 public sessions). For
+every one of those keystrokes, can your JS port render the exact
+same 24×80 terminal screen the C reference produced? Each matching
+screen is one point. Public corpus has 10,982 screens — that's your
+public maximum.
 
-- **PRNG point** — every PRNG call your code made between this step
-  and the previous one matches C's recorded sequence in order.
-- **Screen point** — the rendered 24×80 cell grid at this step
-  matches the recorded one in character, color, attribute, AND
-  cursor position.
+A session that diverges at step 50 still earns 50 screen points;
+you don't have to pass a whole session to score, and you don't have
+to start at the beginning to make progress. Each step's screen is
+checked independently after the recorded input has been replayed up
+to that point.
 
-So every step contributes up to 2 points, capped at 21,804 across the
-public corpus. A session that diverges at step 50 still gives you 50
-PRNG points and 50 screen points; you don't have to pass the whole
-session to score.
+**Then 10,000 more, unseen.** After your fork has been scored on
+the public set, the judge runs another ~10,000 keystrokes from the
+held-out pool — sessions you never see, only the judge has them.
+Match those screens too and you've shown your port has comprehensive
+coverage of the game, not just the corner of it the public sessions
+exercise. A faithful port scores comparably on both pools; a port
+that secretly hardcoded the public traces falls off a cliff on
+held-out.
 
-**Your real score uses the held-out pool too.** The judge — running
-privately, every six hours — re-scores your fork against all 88
-sessions: the 44 public ones above PLUS 44 held-out sessions you
-never see (10,631 more steps, 21,262 more potential points; **43,066
-total**). Held-out sessions are how the contest distinguishes
-"hardcoded the test cases" from "actually ported NetHack." They
-exercise the same engine the public sessions do, but with different
-seeds, different roles, different divergences. A faithful port scores
-well on both pools.
+PRNG sequence matching is the structural prerequisite (your PRNG
+calls have to align with C's call-by-call before any screen can
+match), but PRNG matches alone don't earn points — the leaderboard
+publishes your PRNG match percentage as advisory progress next to
+the screen score.
 
 If top scores cluster too tightly to distinguish the strongest
 entrants, additional and harder held-out sessions will be added over
 the summer (see `docs/PHASES.md`). Plan accordingly.
 
-**The 6-hour cron:** the judge auto-discovers every fork of
+**The 2-hour cron:** the judge auto-discovers every fork of
 `davidbau/teleport-contest` on GitHub. When you push to your fork,
-the next cron firing (within six hours) will pick up your latest
+the next cron firing (within two hours) will pick up your latest
 commit and score it. Your row on the leaderboard at
 [mazesofmenace.ai](https://mazesofmenace.ai/leaderboard/) updates
 shortly after.
@@ -314,14 +306,16 @@ Two channels are scored, both required:
   SGR canonicalization that forgives the terminal's many ways of
   saying "draw a space").
 
-**Scoring is per-step.** Each step (input boundary) earns up to two
-points: one PRNG point if the call sequence between this step and the
-previous one matches C's recorded calls in order, and one screen point
-if the captured 24×80 grid matches in character + color + attribute +
-cursor position. The 44 public sessions contain 10,902 steps (max
-21,804 points). The 44 held-out pool adds 10,631 more steps (max
-21,262 more), for a global maximum of 43,066 points across both
-pools combined.
+**Scoring is per-step, screens-only.** Your score is the count of
+steps where the captured 24×80 grid matches C's exactly (character +
+color + attribute + cursor position). The 44 public sessions contain
+10,982 steps (max 10,982 points). The 44 held-out pool adds 10,631
+more steps (max 10,631 more) for a global maximum of 21,613 points.
+
+PRNG match is the structural prerequisite — if your PRNG diverges
+from C's, the game state diverges and screens can't match — but
+PRNG matches alone don't score points. The leaderboard publishes
+your PRNG match percentage as advisory progress.
 
 ### What's frozen
 
@@ -332,6 +326,7 @@ every scoring run:
 |---|---|
 | `js/isaac64.js` | The canonical PRNG. Frozen so every contestant draws from the same number stream the C recorder did, and per-call results align bit-for-bit. |
 | `js/terminal.js` | The canonical 24×80 grid. Defines what counts as "the screen" — which is itself a non-trivial question once you start thinking about it. |
+| `js/storage.js` | The canonical VFS contract for save files, bones, and the topten record. `localStorage` in the browser, `InMemoryStorage` in the Node sandbox. Frozen so multi-segment sessions (save+restore, bones, chained `#quit`) have a well-defined isolation: state persists across segments within one session, resets between sessions. |
 
 That is the entire fixed surface. Everything else in `js/` —
 including `jsmain.js`, `rng.js`, `display.js`, `const.js` — is yours
@@ -408,7 +403,7 @@ Full mechanics in [`docs/PHASES.md`](docs/PHASES.md).
 
 **[mazesofmenace.ai](https://mazesofmenace.ai/)**
 
-Updates every six hours. Public scores recompute on every push;
+Updates every two hours. Public scores recompute on every push;
 held-out scores update when the cron fires. The official upstream
 skeleton is included as a baseline reference, currently scoring
 0/88 — the floor from which everyone climbs. (For now.)

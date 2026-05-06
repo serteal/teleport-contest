@@ -40,15 +40,17 @@ Then it compares positionally:
 | **Screen** | Every entry in `screens` is decoded into a 24×80 cell grid and cell-compared against the recorded C frame. Two encodings that produce the same pixels match. |
 | **Cursor** | Tiebreaker only — match if you can. |
 
-**Partial credit:** every matched RNG call and every matched screen
-contributes to your score independently. A session that gets the
-first half of its calls right earns half-credit on the PRNG channel,
-not zero. A session that perfectly nails the screen but drifts on
-PRNG still earns full screen credit. Across the public corpus
-(44 sessions, 10,902 steps) and the held-out pool (44 sessions,
+**Partial credit:** your score is the number of steps where the
+rendered screen matches C, summed across all sessions. A session
+that diverges at step 50 still earns 50 screen points; you don't
+need to pass the whole session. Across the public corpus
+(44 sessions, 10,982 steps) and the held-out pool (44 sessions,
 10,631 steps), your headline metric is the *total fraction of
-matched screens + matched RNG calls* — passing whole sessions is
-just the strict-perfect tiebreaker.
+matched screens*. PRNG matching is reported alongside as advisory
+progress — it's the structural prerequisite for screens to match,
+but it doesn't earn points on its own. Passing whole sessions
+(every screen and every PRNG call matched) is the strict-perfect
+tiebreaker.
 
 ## `input` — what the harness gives you
 
@@ -158,6 +160,7 @@ every scoring run:
 |---|---|
 | `js/isaac64.js` | Canonical PRNG engine. Frozen so every contestant draws from the same number stream the C recorder did, letting per-call results align bit-for-bit. |
 | `js/terminal.js` | Canonical 24×80 terminal grid + serialization. Defines what counts as "the screen." |
+| `js/storage.js` | Canonical VFS contract for save/restore, bones, and the topten record. Backed by `localStorage` in the browser and by an `InMemoryStorage` mock in the Node sandbox. Frozen so multi-segment sessions (save+restore, bones, chained `#quit`/new-game) have a well-defined isolation: state persists across segments within a session, resets between sessions. |
 
 Plus the scoring infrastructure (not part of your fork; lives only
 in the scorer):
@@ -282,6 +285,14 @@ underneath and produce the same log entry format. If your PRNG values
 differ from C's, you fail.
 
 **Can I replace `js/terminal.js`?** No — it's frozen.
+
+**Can I replace `js/storage.js`?** No — it's frozen too. Use its
+`vfsReadFile` / `vfsWriteFile` / `vfsDeleteFile` / `vfsListFiles`
+API for save files, bones, the topten record, and anything else
+that needs to survive a `#quit`/restart or save/restore. State
+written via this VFS persists across segments within one session
+(both browser and Node sandbox) and resets between sessions —
+that's the multi-segment contract the judge depends on.
 
 **Can I replace `js/display.js`?** Yes. It builds your in-game screens.
 Just make sure they compare equal (after canonicalization) to C's.
