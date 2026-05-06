@@ -1,7 +1,8 @@
 # The Teleport Coding Challenge
 
 *A guide to porting the Mazes of Menace from C to JavaScript, for
-adventurers traveling with a small swarm of LLM coding assistants.*
+adventurers traveling with a small swarm of LLM coding assistants.
+[Fork it now.](https://github.com/davidbau/teleport-contest/fork)*
 
 NetHack is one of the longest-lived and most peculiar open source
 programs ever written. After 46 years of continuous development —
@@ -30,6 +31,7 @@ in the distance.* Let's begin.
 1. **Fork this repo.** It's a playable NetHack skeleton with the PRNG
    and terminal already wired up. The `js/` directory contains the
    game logic — almost none of it, in fact. That's the point.
+   [Fork it now.](https://github.com/davidbau/teleport-contest/fork)
 2. **Read the C.** The full NetHack 5.0 source lives upstream at
    [NetHack/NetHack](https://github.com/NetHack/NetHack) (tag
    `NetHack-5.0.0_Release`, also pulled in here as a submodule at
