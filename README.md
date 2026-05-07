@@ -1,5 +1,3 @@
-# The Teleport Coding Challenge
-
 > [!NOTE]
 > **Fork author's note:** I wanted to have some fun and rest for a bit
 > while working on a paper submission, so I tried the approach of using a C-to-JS
@@ -11,8 +9,10 @@
 > The implementation was 100% done using out-of-the-box Codex with
 > GPT-5.5 xhigh. A full writeup, and possibly the actual Codex session,
 > will be coming relatively soon. I'm also probably not done: this
-> transpiled version may become the starting point for an actual (readable)
-> JS implementation. The scroll is not yet fully identified.
+> transpiled version may become the starting point of an actual (readable)
+> JS implementation :)
+
+# The Teleport Coding Challenge
 
 _A guide to porting the Mazes of Menace from C to JavaScript, for
 adventurers traveling with a small swarm of LLM coding assistants.
