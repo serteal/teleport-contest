@@ -5,9 +5,39 @@
   "type": "module",
   "scripts": {
     "score": "bash frozen/score.sh",
-    "play": "echo 'Open index.html in a browser to play'"
+    "score:strict": "node tools/strict-score.mjs sessions/",
+    "debug:failures": "node tools/analyze-failures.mjs sessions/",
+    "check:submission": "node tools/check-submission.mjs",
+    "check:final": "npm run check:submission && npm run score:strict",
+    "c2js:probe": "node tools/c2js/build-engine.mjs --probe",
+    "c2js:clean": "rm -rf .cache/c2js",
+    "c2js:prepare": "node tools/c2js/build-engine.mjs --prepare-source",
+    "c2js:compile-smoke": "node tools/c2js/build-engine.mjs --compile-smoke",
+    "c2js:compile-core": "node tools/c2js/build-engine.mjs --compile-core",
+    "c2js:compile-lua": "node tools/c2js/build-engine.mjs --compile-lua",
+    "c2js:compile-port": "node tools/c2js/build-engine.mjs --compile-port",
+    "c2js:link": "node tools/c2js/build-engine.mjs --link-engine",
+    "c2js:format": "node tools/c2js/format.mjs",
+    "c2js:update": "node tools/c2js/build-engine.mjs --update-generated",
+    "trace:generate": "node tools/generate-local-traces.mjs",
+    "trace:generate:smoke": "node tools/generate-local-traces.mjs --tier smoke --build --force --score",
+    "trace:generate:expanded": "node tools/generate-local-traces.mjs --tier default --build --force",
+    "trace:generate:stress": "node tools/generate-local-traces.mjs --tier stress --build --force --out .cache/local-traces-raw-stress",
+    "trace:score": "node tools/analyze-failures.mjs .cache/local-traces",
+    "trace:strict": "node tools/strict-score.mjs .cache/local-traces",
+    "trace:check:competition": "node tools/check-traces.mjs --mode competition .cache/local-traces",
+    "trace:check:paranoid": "node tools/check-traces.mjs --mode paranoid .cache/local-traces",
+    "trace:check:stress:competition": "SESSION_REPLAY_TIMEOUT_MS=120000 node tools/check-traces.mjs --mode competition .cache/local-traces-raw-stress",
+    "trace:check:stress:paranoid": "SESSION_REPLAY_TIMEOUT_MS=120000 node tools/check-traces.mjs --mode paranoid .cache/local-traces-raw-stress",
+    "trace:raw:stress": "node tools/raw-screen-diff.mjs --limit=1 .cache/local-traces-raw-stress",
+    "trace:minimize": "node tools/minimize-trace.mjs",
+    "trace:verify-public": "node scripts/verify-rerecord.mjs",
+    "play": "python3 -m http.server 8000"
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "prettier": "3.8.3"
   }
 }
