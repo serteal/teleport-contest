@@ -7,8 +7,8 @@ import {
   rmSync,
   statSync,
   writeFileSync,
-} from 'node:fs';
-import { join } from 'node:path';
+} from "node:fs";
+import { join } from "node:path";
 import {
   cacheRoot,
   deterministicPatches,
@@ -16,32 +16,34 @@ import {
   preparedSourceDir,
   projectRoot,
   upstreamDir,
-} from './c2js.config.mjs';
-import { ensureToolchain, run } from './common.mjs';
+} from "./c2js.config.mjs";
+import { ensureToolchain, run } from "./common.mjs";
 
 let configuredSource = false;
 
 export function extractHackSources(makefileText) {
-  const match = makefileText.match(/HACKCSRC\s*=\s*([\s\S]*?)\n\s*# all operating-system-dependent/);
-  if (!match) throw new Error('Could not locate HACKCSRC in Makefile.src');
+  const match = makefileText.match(
+    /HACKCSRC\s*=\s*([\s\S]*?)\n\s*# all operating-system-dependent/,
+  );
+  if (!match) throw new Error("Could not locate HACKCSRC in Makefile.src");
   return match[1]
-    .replace(/\\/g, ' ')
+    .replace(/\\/g, " ")
     .split(/\s+/)
     .map((s) => s.trim())
     .filter(Boolean)
-    .filter((s) => s.endsWith('.c'));
+    .filter((s) => s.endsWith(".c"));
 }
 
 function makeLogicalLines(makefileText) {
   const logical = [];
-  let current = '';
+  let current = "";
   for (const rawLine of makefileText.split(/\r?\n/)) {
-    const line = rawLine.replace(/\s+$/g, '');
-    if (line.endsWith('\\')) {
+    const line = rawLine.replace(/\s+$/g, "");
+    if (line.endsWith("\\")) {
       current += `${line.slice(0, -1)} `;
     } else {
       logical.push(`${current}${line}`);
-      current = '';
+      current = "";
     }
   }
   if (current) logical.push(current);
@@ -53,13 +55,18 @@ function extractMakeVariable(makefileText, name) {
     new RegExp(`^${name}\\s*(?:\\?|:|\\+)?=`).test(line),
   );
   if (!assignment) throw new Error(`Could not locate ${name} in Makefile`);
-  return assignment.replace(new RegExp(`^${name}\\s*(?:\\?|:|\\+)?=\\s*`), '').trim();
+  return assignment
+    .replace(new RegExp(`^${name}\\s*(?:\\?|:|\\+)?=\\s*`), "")
+    .trim();
 }
 
 function expandMakeVariables(value, variables) {
   let expanded = value;
   for (let i = 0; i < 8; ++i) {
-    const next = expanded.replace(/\$\(([^)]+)\)/g, (_, name) => variables[name] || '');
+    const next = expanded.replace(
+      /\$\(([^)]+)\)/g,
+      (_, name) => variables[name] || "",
+    );
     if (next === expanded) break;
     expanded = next;
   }
@@ -68,40 +75,41 @@ function expandMakeVariables(value, variables) {
 
 export function extractLuaSources(makefileText) {
   const variables = {};
-  for (const name of ['CORE_O', 'LIB_O', 'BASE_O']) {
+  for (const name of ["CORE_O", "LIB_O", "BASE_O"]) {
     variables[name] = extractMakeVariable(makefileText, name);
   }
   return expandMakeVariables(variables.BASE_O, variables)
     .split(/\s+/)
     .map((s) => s.trim())
     .filter(Boolean)
-    .filter((s) => s.endsWith('.o'))
-    .map((s) => s.replace(/\.o$/, '.c'));
+    .filter((s) => s.endsWith(".o"))
+    .map((s) => s.replace(/\.o$/, ".c"));
 }
 
 export function applyC2jsPortTransforms() {
-  const configPath = join(preparedSourceDir, 'include/config.h');
-  let config = readFileSync(configPath, 'utf8');
+  const configPath = join(preparedSourceDir, "include/config.h");
+  let config = readFileSync(configPath, "utf8");
   if (!/^\s*#define TTY_GRAPHICS\b/m.test(config)) {
-    if (config.includes('/* #define TTY_GRAPHICS */')) {
+    if (config.includes("/* #define TTY_GRAPHICS */")) {
       config = config.replace(
-        '/* #define TTY_GRAPHICS */',
-        '#define TTY_GRAPHICS /* c2js translates the tty/nomux window port */',
+        "/* #define TTY_GRAPHICS */",
+        "#define TTY_GRAPHICS /* c2js translates the tty/nomux window port */",
       );
     } else if (/\/\*\s*#undef TTY_GRAPHICS\b[^*]*\*\//.test(config)) {
       config = config.replace(
         /\/\*\s*#undef TTY_GRAPHICS\b[^*]*\*\//,
-        '#define TTY_GRAPHICS /* c2js translates the tty/nomux window port */',
+        "#define TTY_GRAPHICS /* c2js translates the tty/nomux window port */",
       );
     } else {
-      config += '\n#define TTY_GRAPHICS /* c2js translates the tty/nomux window port */\n';
+      config +=
+        "\n#define TTY_GRAPHICS /* c2js translates the tty/nomux window port */\n";
     }
   }
   config = config.replace(
     /^\s*#define SHIM_GRAPHICS\b.*$/m,
-    '/* #undef SHIM_GRAPHICS -- c2js translates the tty/nomux window port */',
+    "/* #undef SHIM_GRAPHICS -- c2js translates the tty/nomux window port */",
   );
-  if (!config.includes('c2js keeps saves uncompressed in the JS VFS')) {
+  if (!config.includes("c2js keeps saves uncompressed in the JS VFS")) {
     config = config.replace(
       `#if defined(UNIX) && !defined(ZLIB_COMP) && !defined(COMPRESS)
 /* path and file name extension for compression program */
@@ -132,30 +140,30 @@ export function applyC2jsPortTransforms() {
   }
   writeFileSync(configPath, config);
 
-  const unixconfPath = join(preparedSourceDir, 'include/unixconf.h');
-  let unixconf = readFileSync(unixconfPath, 'utf8');
-  if (!unixconf.includes('c2js uses ANSI_DEFAULT termcap')) {
+  const unixconfPath = join(preparedSourceDir, "include/unixconf.h");
+  let unixconf = readFileSync(unixconfPath, "utf8");
+  if (!unixconf.includes("c2js uses ANSI_DEFAULT termcap")) {
     unixconf = unixconf.replace(
-      '#define TERMINFO       /* uses terminfo rather than termcap */',
-      '/* #undef TERMINFO -- c2js uses ANSI_DEFAULT termcap, not curses/terminfo */',
+      "#define TERMINFO       /* uses terminfo rather than termcap */",
+      "/* #undef TERMINFO -- c2js uses ANSI_DEFAULT termcap, not curses/terminfo */",
     );
   }
-  if (!unixconf.includes('c2js scripted tty input')) {
+  if (!unixconf.includes("c2js scripted tty input")) {
     unixconf = unixconf.replace(
-      '#define tgetch getchar',
-      'extern int nhjs_tgetch(void);\n#define tgetch nhjs_tgetch /* c2js scripted tty input */',
+      "#define tgetch getchar",
+      "extern int nhjs_tgetch(void);\n#define tgetch nhjs_tgetch /* c2js scripted tty input */",
     );
-  } else if (!unixconf.includes('extern int nhjs_tgetch(void);')) {
+  } else if (!unixconf.includes("extern int nhjs_tgetch(void);")) {
     unixconf = unixconf.replace(
-      '#define tgetch nhjs_tgetch /* c2js scripted tty input */',
-      'extern int nhjs_tgetch(void);\n#define tgetch nhjs_tgetch /* c2js scripted tty input */',
+      "#define tgetch nhjs_tgetch /* c2js scripted tty input */",
+      "extern int nhjs_tgetch(void);\n#define tgetch nhjs_tgetch /* c2js scripted tty input */",
     );
   }
   writeFileSync(unixconfPath, unixconf);
 
-  const endPath = join(preparedSourceDir, 'src/end.c');
-  let end = readFileSync(endPath, 'utf8');
-  if (!end.includes('c2js capture declaration without curses')) {
+  const endPath = join(preparedSourceDir, "src/end.c");
+  let end = readFileSync(endPath, "utf8");
+  if (!end.includes("c2js capture declaration without curses")) {
     end = end.replace(
       '#include "wintty.h"  /* for NOMUX_CAPTURE define + nomux_capture_write_input_boundary decl (#460) */',
       `#ifdef TTY_GRAPHICS
@@ -171,31 +179,34 @@ extern void nomux_capture_write_input_boundary(void);
     writeFileSync(endPath, end);
   }
 
-  const allmainPath = join(preparedSourceDir, 'src/allmain.c');
-  let allmain = readFileSync(allmainPath, 'utf8');
-  if (!allmain.includes('c2js exposes moveloop_preamble')) {
+  const allmainPath = join(preparedSourceDir, "src/allmain.c");
+  let allmain = readFileSync(allmainPath, "utf8");
+  if (!allmain.includes("c2js exposes moveloop_preamble")) {
     allmain = allmain
       .replace(
-        'staticfn void moveloop_preamble(boolean);',
-        'void moveloop_preamble(boolean); /* c2js exposes moveloop_preamble */',
+        "staticfn void moveloop_preamble(boolean);",
+        "void moveloop_preamble(boolean); /* c2js exposes moveloop_preamble */",
       )
-      .replace('staticfn void\nmoveloop_preamble(boolean resuming)', 'void\nmoveloop_preamble(boolean resuming)');
+      .replace(
+        "staticfn void\nmoveloop_preamble(boolean resuming)",
+        "void\nmoveloop_preamble(boolean resuming)",
+      );
     writeFileSync(allmainPath, allmain);
   }
 
-  const eatPath = join(preparedSourceDir, 'src/eat.c');
-  let eat = readFileSync(eatPath, 'utf8');
-  if (!eat.includes('NH_C2JS_MACOS_MESSAGES')) {
+  const eatPath = join(preparedSourceDir, "src/eat.c");
+  let eat = readFileSync(eatPath, "utf8");
+  if (!eat.includes("NH_C2JS_MACOS_MESSAGES")) {
     eat = eat.replace(
-      '#if defined(MACOS9) || defined(MACOS)',
-      '#if defined(MACOS9) || defined(MACOS) || defined(NH_C2JS_MACOS_MESSAGES)',
+      "#if defined(MACOS9) || defined(MACOS)",
+      "#if defined(MACOS9) || defined(MACOS) || defined(NH_C2JS_MACOS_MESSAGES)",
     );
     writeFileSync(eatPath, eat);
   }
 
-  const calendarPath = join(preparedSourceDir, 'src/calendar.c');
-  let calendar = readFileSync(calendarPath, 'utf8');
-  if (!calendar.includes('c2js recorder fixed datetime timezone')) {
+  const calendarPath = join(preparedSourceDir, "src/calendar.c");
+  let calendar = readFileSync(calendarPath, "utf8");
+  if (!calendar.includes("c2js recorder fixed datetime timezone")) {
     calendar = calendar.replace(
       `#include "hack.h"
 
@@ -331,9 +342,9 @@ nh_c2js_tm_from_yyyymmddhhmmss(char *buf)
     writeFileSync(calendarPath, calendar);
   }
 
-  const mdlibPath = join(preparedSourceDir, 'src/mdlib.c');
-  let mdlib = readFileSync(mdlibPath, 'utf8');
-  if (!mdlib.includes('c2js recorder platform version text')) {
+  const mdlibPath = join(preparedSourceDir, "src/mdlib.c");
+  let mdlib = readFileSync(mdlibPath, "utf8");
+  if (!mdlib.includes("c2js recorder platform version text")) {
     mdlib = mdlib
       .replace(
         `#ifdef ANSI_DEFAULT
@@ -413,8 +424,12 @@ nh_c2js_tm_from_yyyymmddhhmmss(char *buf)
       );
     writeFileSync(mdlibPath, mdlib);
   }
-  mdlib = readFileSync(mdlibPath, 'utf8');
-  if (!mdlib.includes('#ifdef NH_C2JS_RECORDER_PLATFORM\n    "terminal info library"')) {
+  mdlib = readFileSync(mdlibPath, "utf8");
+  if (
+    !mdlib.includes(
+      '#ifdef NH_C2JS_RECORDER_PLATFORM\n    "terminal info library"',
+    )
+  ) {
     mdlib = mdlib.replace(
       `#ifdef TTY_GRAPHICS
 #ifdef TERMINFO
@@ -442,40 +457,40 @@ nh_c2js_tm_from_yyyymmddhhmmss(char *buf)
     writeFileSync(mdlibPath, mdlib);
   }
 
-  const optlistPath = join(preparedSourceDir, 'include/optlist.h');
-  let optlist = readFileSync(optlistPath, 'utf8');
-  if (!optlist.includes('c2js recorder exposes crash option menu entries')) {
+  const optlistPath = join(preparedSourceDir, "include/optlist.h");
+  let optlist = readFileSync(optlistPath, "utf8");
+  if (!optlist.includes("c2js recorder exposes crash option menu entries")) {
     optlist = optlist.replace(
-      '#ifdef CRASHREPORT\n    NHOPTC(crash_email',
-      '#if defined(CRASHREPORT) || defined(NH_C2JS_RECORDER_PLATFORM) /* c2js recorder exposes crash option menu entries */\n    NHOPTC(crash_email',
+      "#ifdef CRASHREPORT\n    NHOPTC(crash_email",
+      "#if defined(CRASHREPORT) || defined(NH_C2JS_RECORDER_PLATFORM) /* c2js recorder exposes crash option menu entries */\n    NHOPTC(crash_email",
     );
     writeFileSync(optlistPath, optlist);
   }
 
-  const optionsPath = join(preparedSourceDir, 'src/options.c');
-  let options = readFileSync(optionsPath, 'utf8');
-  if (!options.includes('c2js recorder crash option handlers')) {
+  const optionsPath = join(preparedSourceDir, "src/options.c");
+  let options = readFileSync(optionsPath, "utf8");
+  if (!options.includes("c2js recorder crash option handlers")) {
     options = options.replace(
-      '#ifdef CRASHREPORT\nstaticfn int\noptfn_crash_email',
-      '#if defined(CRASHREPORT) || defined(NH_C2JS_RECORDER_PLATFORM) /* c2js recorder crash option handlers */\nstaticfn int\noptfn_crash_email',
+      "#ifdef CRASHREPORT\nstaticfn int\noptfn_crash_email",
+      "#if defined(CRASHREPORT) || defined(NH_C2JS_RECORDER_PLATFORM) /* c2js recorder crash option handlers */\nstaticfn int\noptfn_crash_email",
     );
     options = options.replace(
-      '#endif /* CRASHREPORT */\n\nstaticfn int\noptfn_dark_room',
-      '#endif /* CRASHREPORT || NH_C2JS_RECORDER_PLATFORM */\n\nstaticfn int\noptfn_dark_room',
+      "#endif /* CRASHREPORT */\n\nstaticfn int\noptfn_dark_room",
+      "#endif /* CRASHREPORT || NH_C2JS_RECORDER_PLATFORM */\n\nstaticfn int\noptfn_dark_room",
     );
     writeFileSync(optionsPath, options);
   }
 
-  const cmdPath = join(preparedSourceDir, 'src/cmd.c');
-  let cmdSource = readFileSync(cmdPath, 'utf8');
+  const cmdPath = join(preparedSourceDir, "src/cmd.c");
+  let cmdSource = readFileSync(cmdPath, "utf8");
   cmdSource = cmdSource.replace(
-    'extern int doorganize(void);         /**/\n#ifdef NH_C2JS_RECORDER_PLATFORM\nextern int dobugreport(void);              /* c2js recorder bugreport command */\n#endif\n#endif /* DUMB */',
-    'extern int doorganize(void);         /**/\n#endif /* DUMB */\n#ifdef NH_C2JS_RECORDER_PLATFORM\nextern int dobugreport(void);              /* c2js recorder bugreport command */\n#endif',
+    "extern int doorganize(void);         /**/\n#ifdef NH_C2JS_RECORDER_PLATFORM\nextern int dobugreport(void);              /* c2js recorder bugreport command */\n#endif\n#endif /* DUMB */",
+    "extern int doorganize(void);         /**/\n#endif /* DUMB */\n#ifdef NH_C2JS_RECORDER_PLATFORM\nextern int dobugreport(void);              /* c2js recorder bugreport command */\n#endif",
   );
-  if (!cmdSource.includes('c2js recorder bugreport command')) {
+  if (!cmdSource.includes("c2js recorder bugreport command")) {
     cmdSource = cmdSource.replace(
-      'extern int doorganize(void);         /**/\n#endif /* DUMB */',
-      'extern int doorganize(void);         /**/\n#endif /* DUMB */\n#ifdef NH_C2JS_RECORDER_PLATFORM\nextern int dobugreport(void);              /* c2js recorder bugreport command */\n#endif',
+      "extern int doorganize(void);         /**/\n#endif /* DUMB */",
+      "extern int doorganize(void);         /**/\n#endif /* DUMB */\n#ifdef NH_C2JS_RECORDER_PLATFORM\nextern int dobugreport(void);              /* c2js recorder bugreport command */\n#endif",
     );
     cmdSource = cmdSource.replace(
       '#ifdef CRASHREPORT\n    { \'\\0\',   "bugreport", "file a bug report",',
@@ -484,11 +499,11 @@ nh_c2js_tm_from_yyyymmddhhmmss(char *buf)
   }
   writeFileSync(cmdPath, cmdSource);
 
-  const termcapPath = join(preparedSourceDir, 'win/tty/termcap.c');
-  let termcap = readFileSync(termcapPath, 'utf8');
-  if (!termcap.includes('nhjs_tty_capture_boundary')) {
+  const termcapPath = join(preparedSourceDir, "win/tty/termcap.c");
+  let termcap = readFileSync(termcapPath, "utf8");
+  if (!termcap.includes("nhjs_tty_capture_boundary")) {
     termcap = termcap.replace(
-      'static void\nnomux_emit_marker(const char *kind)\n{\n    if (!nomux_markers_enabled())\n        return;\n\n    {\n        char *scr = nomux_capture_screen();\n        int cx, cy;\n        size_t scr_len = scr ? strlen(scr) : 0;\n        nomux_get_cursor(&cx, &cy);',
+      "static void\nnomux_emit_marker(const char *kind)\n{\n    if (!nomux_markers_enabled())\n        return;\n\n    {\n        char *scr = nomux_capture_screen();\n        int cx, cy;\n        size_t scr_len = scr ? strlen(scr) : 0;\n        nomux_get_cursor(&cx, &cy);",
       `static void
 nomux_emit_marker(const char *kind)
 {
@@ -511,8 +526,8 @@ nomux_emit_marker(const char *kind)
     {`,
     );
     termcap = termcap.replace(
-      '        if (scr_len > 0)\n            fwrite(scr, 1, scr_len, stdout);\n        fflush(stdout);\n    }\n}',
-      '        if (scr_len > 0)\n            fwrite(scr, 1, scr_len, stdout);\n        fflush(stdout);\n    }\n}',
+      "        if (scr_len > 0)\n            fwrite(scr, 1, scr_len, stdout);\n        fflush(stdout);\n    }\n}",
+      "        if (scr_len > 0)\n            fwrite(scr, 1, scr_len, stdout);\n        fflush(stdout);\n    }\n}",
     );
     writeFileSync(termcapPath, termcap);
   }
@@ -530,17 +545,7 @@ nomux_emit_marker(const char *kind)
 #endif`,
   );
   writeFileSync(termcapPath, termcap);
-  if (!termcap.includes('c2js mirrors emitted termcap state')) {
-    termcap = termcap.replace(
-      `    if (color == CLR_BLACK && iflags.wc2_darkgray)
-        color = 8;  /* index 8 -> ANSI 90m (bright black / dark gray) */
-    nomux_fg_cur = (color < 0 || color >= 16) ? 7 : (unsigned char) color;`,
-      `    if (color == CLR_BLACK && iflags.wc2_darkgray)
-        color = 8;  /* index 8 -> ANSI 90m (bright black / dark gray) */
-    else if (color == CLR_BLACK)
-        color = CLR_BLUE; /* c2js mirrors emitted termcap state. */
-    nomux_fg_cur = (color < 0 || color >= 16) ? 7 : (unsigned char) color;`,
-    );
+  if (!termcap.includes("c2js mirrors emitted termcap state")) {
     termcap = termcap.replace(
       `void
 term_start_attr(int attr)
@@ -659,31 +664,21 @@ term_start_color(int color)
     );
     writeFileSync(termcapPath, termcap);
   }
-  termcap = readFileSync(termcapPath, 'utf8');
-  if (!termcap.includes('c2js compresses styled blank runs like tmux capture')) {
+  termcap = readFileSync(termcapPath, "utf8");
+  if (termcap.includes("c2js mirrors emitted termcap state.")) {
     termcap = termcap.replace(
-      `        int in_dec = 0;
-        for (col = 0; col <= end; col++) {`,
-      `        int in_dec = 0;
-        int attr_segment_has_text = 0;
-        for (col = 0; col <= end; col++) {`,
+      `    else if (color == CLR_BLACK)
+        color = CLR_BLUE; /* c2js mirrors emitted termcap state. */
+`,
+      "",
     );
-    termcap = termcap.replace(
-      `                if ((at & 4) && !(cur_attr & 4)) p += sprintf(p, "\\033[4m");
-                if (!(at & 4) && (cur_attr & 4)) p += sprintf(p, "\\033[24m");
-                cur_attr = at;
-            }`,
-      `                if ((at & 4) && !(cur_attr & 4)) p += sprintf(p, "\\033[4m");
-                if (!(at & 4) && (cur_attr & 4)) p += sprintf(p, "\\033[24m");
-                attr_segment_has_text = 0;
-                cur_attr = at;
-            }`,
-    );
-    termcap = termcap.replace(
-      `            if (c->decgfx && !in_dec) { *p++ = '\\016'; in_dec = 1; }
-            else if (!c->decgfx && in_dec) { *p++ = '\\017'; in_dec = 0; }
-            *p++ = ch;`,
-      `            if (at != 0 && ch == ' ' && !c->decgfx
+  }
+  if (termcap.includes("c2js compresses styled blank runs like tmux capture")) {
+    termcap = termcap
+      .replace("        int attr_segment_has_text = 0;\n", "")
+      .replace("                attr_segment_has_text = 0;\n", "")
+      .replace(
+        `            if (at != 0 && ch == ' ' && !c->decgfx
                 && attr_segment_has_text) {
                 int run = 1;
 
@@ -703,34 +698,42 @@ term_start_color(int color)
                     continue;
                 }
             }
-            if (c->decgfx && !in_dec) { *p++ = '\\016'; in_dec = 1; }
-            else if (!c->decgfx && in_dec) { *p++ = '\\017'; in_dec = 0; }
-            *p++ = ch;
-            if (at != 0 && ch != ' ')
-                attr_segment_has_text = 1;`,
-    );
-    writeFileSync(termcapPath, termcap);
-  }
-  termcap = readFileSync(termcapPath, 'utf8');
-  if (termcap.includes('attr_segment_start_col')) {
-    termcap = termcap
-      .replace('int attr_segment_start_col = -1;', 'int attr_segment_has_text = 0;')
-      .replace('attr_segment_start_col = (!cur_attr && at) ? col : -1;', 'attr_segment_has_text = 0;')
-      .replace('&& col != attr_segment_start_col) {', '&& attr_segment_has_text) {')
+`,
+        "",
+      )
       .replace(
-        `            *p++ = ch;
-        }`,
-        `            *p++ = ch;
-            if (at != 0 && ch != ' ')
+        `            if (at != 0 && ch != ' ')
                 attr_segment_has_text = 1;
-        }`,
+`,
+        "",
       );
     writeFileSync(termcapPath, termcap);
   }
+  termcap = readFileSync(termcapPath, "utf8");
+  if (!termcap.includes("c2js leaves blink as blink for NOMUX parity")) {
+    termcap = termcap.replace(
+      `    /* blink used to be converted to bold unconditionally; now depends on MB */
+    if ((msk & HL_BLINK) && (!MB || !*MB)) {
+        msk |= HL_BOLD;
+        msk &= ~HL_BLINK;
+    }`,
+      `    /* blink used to be converted to bold unconditionally; now depends on MB */
+#ifndef NH_C2JS_TTY_CAPTURE
+    if ((msk & HL_BLINK) && (!MB || !*MB)) {
+        msk |= HL_BOLD;
+        msk &= ~HL_BLINK;
+    }
+#else
+    /* c2js leaves blink as blink for NOMUX parity with the xterm recorder;
+       NOMUX captures inverse/color but does not serialize blink itself. */
+#endif`,
+    );
+    writeFileSync(termcapPath, termcap);
+  }
 
-  const winttyPath = join(preparedSourceDir, 'win/tty/wintty.c');
-  let wintty = readFileSync(winttyPath, 'utf8');
-  if (!wintty.includes('c2js always reads scripted tty input')) {
+  const winttyPath = join(preparedSourceDir, "win/tty/wintty.c");
+  let wintty = readFileSync(winttyPath, "utf8");
+  if (!wintty.includes("c2js always reads scripted tty input")) {
     wintty = wintty.replace(
       `#ifdef UNIX
         i = (program_state.getting_char == 1)
@@ -755,7 +758,7 @@ term_start_color(int color)
 #endif`,
     );
   }
-  if (!wintty.includes('c2js keeps NOMUX full-screen clears explicit')) {
+  if (!wintty.includes("c2js keeps NOMUX full-screen clears explicit")) {
     wintty = wintty.replace(
       `            ttyDisplay->toplin = TOPLINE_EMPTY;
         } else {
@@ -777,7 +780,7 @@ term_start_color(int color)
         if (cw->data || !cw->maxrow)`,
     );
   }
-  if (!wintty.includes('c2js mirrors full-screen text-window backing clear')) {
+  if (!wintty.includes("c2js mirrors full-screen text-window backing clear")) {
     wintty = wintty.replace(
       `    for (n = 0, i = 0; i < cw->maxrow; i++) {
         HUPSKIP();`,
@@ -804,10 +807,8 @@ term_start_color(int color)
             n = 0;`,
     );
   }
-  if (!wintty.includes('c2js records glyph colors directly in NOMUX')) {
+  if (wintty.includes("c2js records glyph colors directly in NOMUX")) {
     wintty = wintty.replace(
-      `    if (!glyphdone)
-        g_putch(ch); /* print the character */`,
       `#ifdef NH_C2JS_TTY_CAPTURE
     if (!glyphdone && iflags.use_color
         && color != NO_COLOR && color != CLR_GRAY) {
@@ -815,22 +816,11 @@ term_start_color(int color)
         nomux_set_fg(color);
     }
 #endif
-    if (!glyphdone)
-        g_putch(ch); /* print the character */`,
+`,
+      "",
     );
   }
-  if (
-    wintty.includes('if (!glyphdone && iflags.use_color) {\n        /* c2js records glyph colors directly in NOMUX. */')
-  ) {
-    wintty = wintty.replace(
-      `if (!glyphdone && iflags.use_color) {
-        /* c2js records glyph colors directly in NOMUX. */`,
-      `if (!glyphdone && iflags.use_color
-        && color != NO_COLOR && color != CLR_GRAY) {
-        /* c2js records glyph colors directly in NOMUX. */`,
-    );
-  }
-  if (!wintty.includes('c2js honors basic glyph customcolors')) {
+  if (!wintty.includes("c2js honors basic glyph customcolors")) {
     wintty = wintty.replace(
       `    ch = glyphinfo->ttychar;
     color = glyphinfo->gm.sym.color;
@@ -849,56 +839,81 @@ term_start_color(int color)
 
 export function prepareSource() {
   configuredSource = false;
-  if (!existsSync(join(upstreamDir, 'include/patchlevel.h'))) {
-    throw new Error('nethack-c/upstream is missing; run git submodule update --init nethack-c/upstream');
+  if (!existsSync(join(upstreamDir, "include/patchlevel.h"))) {
+    throw new Error(
+      "nethack-c/upstream is missing; run git submodule update --init nethack-c/upstream",
+    );
   }
   mkdirSync(cacheRoot, { recursive: true });
   rmSync(preparedSourceDir, { recursive: true, force: true });
   mkdirSync(preparedSourceDir, { recursive: true });
 
-  run('rsync', ['-a', '--exclude=.git', `${upstreamDir}/`, `${preparedSourceDir}/`]);
-  run('git', ['init', '-q'], { cwd: preparedSourceDir });
-  run('git', ['-c', 'gc.auto=0', 'add', '-A'], { cwd: preparedSourceDir });
-  run('git', ['-c', 'user.email=c2js@local', '-c', 'user.name=c2js', 'commit', '-q', '-m', 'baseline'], {
-    cwd: preparedSourceDir,
-  });
+  run("rsync", [
+    "-a",
+    "--exclude=.git",
+    `${upstreamDir}/`,
+    `${preparedSourceDir}/`,
+  ]);
+  run("git", ["init", "-q"], { cwd: preparedSourceDir });
+  run("git", ["-c", "gc.auto=0", "add", "-A"], { cwd: preparedSourceDir });
+  run(
+    "git",
+    [
+      "-c",
+      "user.email=c2js@local",
+      "-c",
+      "user.name=c2js",
+      "commit",
+      "-q",
+      "-m",
+      "baseline",
+    ],
+    {
+      cwd: preparedSourceDir,
+    },
+  );
 
   for (const patchName of deterministicPatches) {
-    run('git', ['apply', '--recount', join(patchDir, patchName)], { cwd: preparedSourceDir });
+    run("git", ["apply", "--recount", join(patchDir, patchName)], {
+      cwd: preparedSourceDir,
+    });
   }
-  rmSync(join(preparedSourceDir, '.git'), { recursive: true, force: true });
+  rmSync(join(preparedSourceDir, ".git"), { recursive: true, force: true });
   applyC2jsPortTransforms();
 
-  const makefile = readFileSync(join(preparedSourceDir, 'sys/unix/Makefile.src'), 'utf8');
+  const makefile = readFileSync(
+    join(preparedSourceDir, "sys/unix/Makefile.src"),
+    "utf8",
+  );
   const hackSources = extractHackSources(makefile);
   writeFileSync(
-    join(cacheRoot, 'source-manifest.json'),
+    join(cacheRoot, "source-manifest.json"),
     JSON.stringify(
       {
-        upstream: 'nethack-c/upstream',
+        upstream: "nethack-c/upstream",
         patches: deterministicPatches,
         c2jsPortTransforms: [
-          'keep TTY_GRAPHICS enabled and compile NetHack tty/nomux rendering',
-          'disable external save compression so JS VFS persistence stays in-process',
-          'redirect tgetch to a scripted c2js input function',
-          'capture NOMUX input-boundary frames into exported in-memory arrays',
-          'mirror emitted termcap color/attribute state in NOMUX capture',
-          'export moveloop_preamble so the c2js driver can step moveloop_core',
-          'enable macOS apple/pear message parity without enabling full MACOS platform headers',
+          "keep TTY_GRAPHICS enabled and compile NetHack tty/nomux rendering",
+          "disable external save compression so JS VFS persistence stays in-process",
+          "redirect tgetch to a scripted c2js input function",
+          "capture NOMUX input-boundary frames into exported in-memory arrays",
+          "mirror emitted termcap color/attribute state in NOMUX capture",
+          "export moveloop_preamble so the c2js driver can step moveloop_core",
+          "enable macOS apple/pear message parity without enabling full MACOS platform headers",
         ],
         hackSources,
         portSources: [
-          'src/date.c',
-          'src/cfgfiles.c',
-          'sys/share/posixregex.c',
-          'sys/share/tclib.c',
-          'win/tty/getline.c',
-          'win/tty/termcap.c',
-          'win/tty/topl.c',
-          'win/tty/wintty.c',
-          'tools/c2js/host/nhjs_host.c',
-          'tools/c2js/host/nhjs_tty_api.c',
-          '.cache/c2js/generated/nhjs_data.c',
+          "src/date.c",
+          "src/cfgfiles.c",
+          "sys/share/posixregex.c",
+          "sys/share/tclib.c",
+          "win/tty/getline.c",
+          "win/tty/termcap.c",
+          "win/tty/topl.c",
+          "win/tty/wintty.c",
+          "tools/c2js/host/nhjs_host.c",
+          "tools/c2js/host/nhjs_tty_api.c",
+          ".cache/c2js/generated/nhjs_data.c",
         ],
       },
       null,
@@ -911,7 +926,7 @@ export function prepareSource() {
 }
 
 export function ensurePreparedSource() {
-  if (!existsSync(join(preparedSourceDir, 'src/allmain.c'))) {
+  if (!existsSync(join(preparedSourceDir, "src/allmain.c"))) {
     prepareSource();
   }
 }
@@ -921,25 +936,40 @@ export function configureSource() {
   ensureToolchain();
   ensurePreparedSource();
   applyC2jsPortTransforms();
-  run('sh', ['sys/unix/setup.sh', 'sys/unix/hints/linux-minimal'], { cwd: preparedSourceDir });
-  run('make', ['fetch-lua'], { cwd: preparedSourceDir });
+  run("sh", ["sys/unix/setup.sh", "sys/unix/hints/linux-minimal"], {
+    cwd: preparedSourceDir,
+  });
+  run("make", ["fetch-lua"], { cwd: preparedSourceDir });
   run(
-    'make',
+    "make",
     [
-      '-C',
-      'src',
-      '../src/config.h-t',
-      '../src/hack.h-t',
-      '../include/onames.h',
-      '../include/pm.h',
-      '../include/date.h',
-      'CC=clang',
-      'CFLAGS=-g -I../include',
-      'SYSCFLAGS=-DLUA_USE_POSIX',
+      "-C",
+      "src",
+      "../src/config.h-t",
+      "../src/hack.h-t",
+      "../include/onames.h",
+      "../include/pm.h",
+      "../include/date.h",
+      "CC=clang",
+      "CFLAGS=-g -I../include",
+      "SYSCFLAGS=-DLUA_USE_POSIX",
     ],
     { cwd: preparedSourceDir },
   );
-  run('make', ['-C', 'dat', 'rumors', 'data', 'engrave', 'epitaph', 'oracles', 'bogusmon'], { cwd: preparedSourceDir });
+  run(
+    "make",
+    [
+      "-C",
+      "dat",
+      "rumors",
+      "data",
+      "engrave",
+      "epitaph",
+      "oracles",
+      "bogusmon",
+    ],
+    { cwd: preparedSourceDir },
+  );
   configuredSource = true;
-  console.log('configured NetHack source for c2js compile smoke');
+  console.log("configured NetHack source for c2js compile smoke");
 }
