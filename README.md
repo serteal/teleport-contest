@@ -1,8 +1,22 @@
 # The Teleport Coding Challenge
 
-*A guide to porting the Mazes of Menace from C to JavaScript, for
+> [!NOTE]
+> **Fork author's note:** I wanted to have some fun and rest for a bit
+> while working on a paper submission, so I tried the approach of using a C-to-JS
+> transpiler. This fork ports NetHack by compiling the C engine into
+> plain JavaScript with Emscripten's wasm2js path, plus a small JS host
+> boundary for terminal capture, deterministic inputs, persistence, and
+> scoring compatibility.
+>
+> The implementation was 100% done using out-of-the-box Codex with
+> GPT-5.5 xhigh. A full writeup, and possibly the actual Codex session,
+> will be coming relatively soon. I'm also probably not done: this
+> transpiled version may become the starting point for an actual (readable)
+> JS implementation. The scroll is not yet fully identified.
+
+_A guide to porting the Mazes of Menace from C to JavaScript, for
 adventurers traveling with a small swarm of LLM coding assistants.
-[Fork it now.](https://github.com/davidbau/teleport-contest/fork)*
+[Fork it now.](https://github.com/davidbau/teleport-contest/fork)_
 
 NetHack is one of the longest-lived and most peculiar open source
 programs ever written. After 46 years of continuous development —
@@ -13,7 +27,7 @@ the corridors twist.
 
 Your task, should you choose to accept it, is to fork this repository
 and produce a JavaScript implementation whose external behavior is
-*indistinguishable* from upstream NetHack 5.0. Bit-exact. Same PRNG
+_indistinguishable_ from upstream NetHack 5.0. Bit-exact. Same PRNG
 sequence, same terminal output, frame for frame, byte for byte, all
 the way down to which random newt corpse you trip over on Dlvl 3.
 
@@ -23,8 +37,8 @@ that **the magic is in the LLM methods, not the code itself**. If
 your method works, sharing the code costs you nothing. If it doesn't,
 no one was going to copy your code anyway.
 
-*You feel deep wisdom for a moment. You hear bubbling water somewhere
-in the distance.* Let's begin.
+_You feel deep wisdom for a moment. You hear bubbling water somewhere
+in the distance._ Let's begin.
 
 ## How
 
@@ -131,7 +145,7 @@ forward is to delete its entries one at a time, replacing each with
 the real C function port that produces those calls naturally.
 
 The skeleton is "what works without porting much." Everything beyond
-is yours to build. *Be careful, ahead.*
+is yours to build. _Be careful, ahead._
 
 ### 2. Patches to make C NetHack deterministic
 
@@ -212,9 +226,9 @@ clang evaluates left-to-right. A single innocent line like
 on the compiler — completely scrambling the entire PRNG sequence.
 We pin to clang so the recorder's behavior is reproducible across
 machines, and the JS port (which evaluates left-to-right) can match
-it. *If you build with gcc, your dungeon will look correct but every
+it. _If you build with gcc, your dungeon will look correct but every
 random number will be wrong. You sense the presence of an unfortunate
-compiler.*
+compiler._
 
 ### 3. A pile of recorded delvings to score against
 
@@ -284,7 +298,7 @@ You don't need to do anything special to "submit." Forking and pushing
 is the entire protocol. There is no application form, no submission
 button, no email to send. The dungeon notices when you arrive.
 
-*Welcome to NetHack. Good luck, and have fun.*
+_Welcome to NetHack. Good luck, and have fun._
 
 ## The Teleport Contest
 
@@ -324,11 +338,11 @@ your PRNG match percentage as advisory progress.
 Two files in your fork are overlaid from the canonical copy before
 every scoring run:
 
-| File | Why frozen |
-|---|---|
-| `js/isaac64.js` | The canonical PRNG. Frozen so every contestant draws from the same number stream the C recorder did, and per-call results align bit-for-bit. |
-| `js/terminal.js` | The canonical 24×80 grid. Defines what counts as "the screen" — which is itself a non-trivial question once you start thinking about it. |
-| `js/storage.js` | The canonical VFS contract for save files, bones, and the topten record. `localStorage` in the browser, `InMemoryStorage` in the Node sandbox. Frozen so multi-segment sessions (save+restore, bones, chained `#quit`) have a well-defined isolation: state persists across segments within one session, resets between sessions. |
+| File             | Why frozen                                                                                                                                                                                                                                                                                                                        |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `js/isaac64.js`  | The canonical PRNG. Frozen so every contestant draws from the same number stream the C recorder did, and per-call results align bit-for-bit.                                                                                                                                                                                      |
+| `js/terminal.js` | The canonical 24×80 grid. Defines what counts as "the screen" — which is itself a non-trivial question once you start thinking about it.                                                                                                                                                                                          |
+| `js/storage.js`  | The canonical VFS contract for save files, bones, and the topten record. `localStorage` in the browser, `InMemoryStorage` in the Node sandbox. Frozen so multi-segment sessions (save+restore, bones, chained `#quit`) have a well-defined isolation: state persists across segments within one session, resets between sessions. |
 
 That is the entire fixed surface. Everything else in `js/` —
 including `jsmain.js`, `rng.js`, `display.js`, `const.js` — is yours
@@ -425,10 +439,10 @@ Open an issue on this repo, or check the docs:
 
 ---
 
-*You die...*
+_You die..._
 
 Just kidding. Nobody dies in this contest. The worst that happens is
 the leaderboard says 0/88 for a while. That's also where everyone
 starts.
 
-*Welcome to NetHack.*
+_Welcome to NetHack._
