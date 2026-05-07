@@ -1,221 +1,303 @@
-// jsmain.js — Game engine: NethackGame class + per-segment runner.
-// C ref: unixmain.c — nethack_main() initialization and game setup.
-//
-// Contest contract: the judge orchestrates sessions (load JSON,
-// normalize v4/v5, loop segments, aggregate scores). It calls
-// runSegment(segment, prevGame) for each game segment and reads back
-// game.getScreens() / getRngLog() / getCursors() to compare with
-// C-recorded session data.
-//
-// For browser play, see nethack.js (uses NethackGame directly).
+// jsmain.js - contest runner backed by the generated plain-JS NetHack core.
 
-import { game, resetGame } from './gstate.js';
-import { initRng, enableRngLog, getRngLog } from './rng.js';
-import { pushKey, nhgetch } from './input.js';
-import { newgame, moveloop_core } from './allmain.js';
-import { parseNethackrc } from './options.js';
-import { flush_screen } from './display.js';
-import { GameDisplay } from './game_display.js';
+import createCoreModule from './generated/nethack-core.mjs';
+import { restorePersistentFs, snapshotPersistentFs, storageForGame } from './persistence.js';
+const ROWS = 24;
+const COLS = 80;
+const DEFAULT_COLOR = 8;
+const DEC_TO_UNICODE = {
+  '`': '\u25c6',
+  a: '\u2592',
+  f: '\u00b0',
+  g: '\u00b1',
+  j: '\u2518',
+  k: '\u2510',
+  l: '\u250c',
+  m: '\u2514',
+  n: '\u253c',
+  q: '\u2500',
+  t: '\u251c',
+  u: '\u2524',
+  v: '\u2534',
+  w: '\u252c',
+  x: '\u2502',
+  y: '\u2264',
+  z: '\u2265',
+  '|': '\u2260',
+  o: '\u23ba',
+  s: '\u23bd',
+  '{': '\u03c0',
+  '~': '\u00b7',
+};
 
-// ── NethackGame ──
-// Wraps a single game session with replay infrastructure.
+function splitRngLog(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/\)\s+=\s+/g, ')='))
+    .filter(Boolean);
+}
+
+function previousArray(prevGame, getter, field) {
+  if (!prevGame) return [];
+  if (Array.isArray(prevGame[field])) return [...prevGame[field]];
+  const value = prevGame[getter]?.();
+  return Array.isArray(value) ? [...value] : [];
+}
+
+function isBlankCapturedScreen(screen) {
+  return (
+    String(screen || '')
+      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      .replace(/[\x0e\x0f]/g, '')
+      .trim() === ''
+  );
+}
+
+function canonicalizeCapturedScreen(screen) {
+  const lines = String(screen || '')
+    .split('\n')
+    .map((line) => line.replace(/ {5,}/g, (spaces) => `\x1b[${spaces.length}C`));
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return lines.join('\n');
+}
+
+function applySgr(params, state) {
+  const parts = params === '' ? ['0'] : String(params).split(';');
+  for (const part of parts) {
+    const code = Number(part || 0);
+    if (code === 0) {
+      state.color = DEFAULT_COLOR;
+      state.attr = 0;
+    } else if (code === 1) {
+      state.attr |= 2;
+    } else if (code === 4) {
+      state.attr |= 4;
+    } else if (code === 7) {
+      state.attr |= 1;
+    } else if (code === 22) {
+      state.attr &= ~2;
+    } else if (code === 24) {
+      state.attr &= ~4;
+    } else if (code === 27) {
+      state.attr &= ~1;
+    } else if (code === 39) {
+      state.color = DEFAULT_COLOR;
+    } else if (code >= 30 && code <= 37) {
+      state.color = code - 30;
+    } else if (code >= 90 && code <= 97) {
+      state.color = code - 90 + 8;
+    }
+  }
+}
+
+export function renderCapturedScreen(display, screen, cursor = [0, 0, 1]) {
+  if (!display) return;
+  display.clearScreen?.();
+
+  let row = 0;
+  let col = 0;
+  let decgfx = false;
+  const state = { color: DEFAULT_COLOR, attr: 0 };
+  const text = String(screen || '');
+
+  for (let i = 0; i < text.length; ) {
+    const ch = text[i];
+    if (ch === '\n') {
+      row++;
+      col = 0;
+      i++;
+      continue;
+    }
+    if (ch === '\x0e') {
+      decgfx = true;
+      i++;
+      continue;
+    }
+    if (ch === '\x0f') {
+      decgfx = false;
+      i++;
+      continue;
+    }
+    if (ch === '\x1b' && text[i + 1] === '[') {
+      let j = i + 2;
+      while (j < text.length && /[0-9;?]/.test(text[j])) j++;
+      const params = text.slice(i + 2, j);
+      const final = text[j];
+      i = j + 1;
+      if (final === 'C') {
+        col += Number(params) || 1;
+      } else if (final === 'm') {
+        applySgr(params, state);
+      }
+      continue;
+    }
+
+    if (row >= 0 && row < ROWS && col >= 0 && col < COLS) {
+      display.setCell?.(col, row, decgfx ? DEC_TO_UNICODE[ch] || ch : ch, state.color, state.attr);
+    }
+    col++;
+    i++;
+  }
+
+  display.cursSet?.(cursor?.[2] ?? 1);
+  display.setCursor?.(cursor?.[0] ?? 0, cursor?.[1] ?? 0);
+}
+
+export function initializeInteractiveGame(display, game) {
+  attachInteractiveDisplay(game, display);
+}
+
+function renderLatestCapturedScreen(game, display) {
+  const screens = game?.getScreens?.() || [];
+  const cursors = game?.getCursors?.() || [];
+  if (!screens.length) return;
+  renderCapturedScreen(display, screens[screens.length - 1], cursors[cursors.length - 1]);
+}
+
+function attachInteractiveDisplay(game, display) {
+  if (!display) return;
+  display._nhjsInteractive = {
+    seed: game._seed,
+    datetime: game._datetime,
+    nethackrc: game._nethackrc,
+    moves: game._moves || '',
+    game,
+  };
+  renderLatestCapturedScreen(game, display);
+}
+
 export class NethackGame {
-    constructor(opts = {}) {
-        this._seed = opts.seed || 0;
-        this._datetime = opts.datetime || null;
-        this._nethackrc = opts.nethackrc || '';
-        // Cross-segment persistence handle. The judge sandbox passes a
-        // shared Web-Storage-shaped object here so save / record /
-        // bones survive across segments of a session; the browser
-        // /play/<owner>/ page passes a localStorage-backed view so
-        // those files also survive page reloads. If a port doesn't
-        // need persistence (no save/restore implemented yet), it can
-        // ignore this; the field just sits unused.
-        this._storage = opts.storage || null;
-        this._screens = [];
-        this._cursors = [];
-        this._rngSlices = [];
-        // Animation frames captured during each step.  Outer index
-        // matches _screens (one entry per input boundary); inner array
-        // is the frames that fired between this boundary and the
-        // previous one, in emit order.  Populated by animationFrame()
-        // calls; committed at each input boundary.
-        this._animFramesByStep = [];
-        this._pendingAnimFrames = [];
-        this._lastRngIdx = 0;
-        this._nhgetchCount = 0;
+  constructor(opts = {}, prevGame = null) {
+    this._seed = opts.seed || 0;
+    this._datetime = opts.datetime || '';
+    this._nethackrc = opts.nethackrc || '';
+    this._moves = opts.moves || '';
+    this._storage = storageForGame(prevGame);
+    this._screens = previousArray(prevGame, 'getScreens', '_screens');
+    this._cursors = previousArray(prevGame, 'getCursors', '_cursors');
+    this._animationFrames = previousArray(prevGame, 'getAnimationFrames', '_animationFrames');
+    this._rngLog = previousArray(prevGame, 'getRngLog', '_rngLog');
+    this._stderr = [];
+  }
+
+  async start() {
+    const mod = await createCoreModule({
+      print() {},
+      printErr: (line) => this._stderr.push(String(line)),
+    });
+    this._module = mod;
+    restorePersistentFs(mod.FS, this._storage);
+
+    mod.ccall(
+      'nhjs_session_init',
+      null,
+      ['number', 'string', 'string', 'string'],
+      [this._seed, this._datetime, this._nethackrc, this._moves],
+    );
+
+    const maxIterations = Math.max(10000, this._moves.length * 64);
+    try {
+      mod.ccall('nhjs_session_run', 'number', ['number'], [maxIterations]);
+    } catch (error) {
+      const message = String(error?.message || error || '');
+      if (!message.includes('exit(0)')) throw error;
     }
 
-    // Universal animation-frame hook.  Call once per intermediate
-    // animation state — typically inside whatever your port writes as
-    // the equivalent of NetHack's nh_delay_output() (zap beams, thrown
-    // objects, hurtle steps, explosion expansions).
-    //
-    // Same call, same code, in every runtime:
-    //   * Browser /play/  — your writes to the Terminal already update
-    //                        the visible DOM cells; we yield via
-    //                        requestAnimationFrame so the browser
-    //                        actually paints between frames.
-    //   * Judge sandbox    — the Terminal is a pure data structure;
-    //                        we yield a microtask, effectively
-    //                        immediate.
-    //   * Local score.sh   — same as judge sandbox.
-    //
-    // The yield mechanism is the only environment-sensitive bit, and
-    // it is invisible to contestant code: every caller writes the same
-    // `await game.animationFrame()`.
-    //
-    // Frames are scored as a SUPPLEMENTAL metric (see API.md).  Not
-    // implementing animation frames doesn't penalise your official
-    // RNG / screen score in any way.
-    async animationFrame() {
-        const disp = game?.nhDisplay;
-        const term = disp?.terminal || disp;
-        this._pendingAnimFrames.push({
-            screen: term?.serialize ? term.serialize() : '',
-            cursor: disp ? [disp.cursorCol ?? 0, disp.cursorRow ?? 0, 1] : null,
-        });
-        if (typeof requestAnimationFrame === 'function') {
-            await new Promise((resolve) => requestAnimationFrame(resolve));
-        } else {
-            await null;
-        }
+    const screenCount = mod.ccall('nhjs_get_screen_count', 'number', [], []);
+    const finalCursor = [
+      mod.ccall('nhjs_get_cursor_col', 'number', [], []),
+      mod.ccall('nhjs_get_cursor_row', 'number', [], []),
+      1,
+    ];
+    const hasFrameCursors =
+      typeof mod._nhjs_get_screen_cursor_col === 'function' && typeof mod._nhjs_get_screen_cursor_row === 'function';
+    for (let i = 0; i < screenCount; i++) {
+      const screen = canonicalizeCapturedScreen(mod.ccall('nhjs_get_screen', 'string', ['number'], [i]));
+      if (isBlankCapturedScreen(screen)) continue;
+      this._screens.push(screen);
+      this._cursors.push(
+        hasFrameCursors
+          ? [
+              mod.ccall('nhjs_get_screen_cursor_col', 'number', ['number'], [i]),
+              mod.ccall('nhjs_get_screen_cursor_row', 'number', ['number'], [i]),
+              1,
+            ]
+          : finalCursor,
+      );
     }
 
-    async start() {
-        const g = resetGame();
-
-        // Parse nethackrc
-        const opts = parseNethackrc(this._nethackrc);
-        g.plname = opts.name || 'Hero';
-        g.flags = { verbose: true, ...opts.flags };
-        g.iflags = { ...opts.iflags };
-        if (opts.preferred_pet) g.preferred_pet = opts.preferred_pet;
-        if (opts.tutorial_set) g.tutorial_set_in_config = true;
-
-        // Initialize hero struct
-        g.u = { ux: 0, uy: 0, ux0: 0, uy0: 0 };
-        g.context = { move: 0 };
-        g.program_state = {};
-        g.moves = 1;
-
-        // TODO: Map role/race/gender/align from opts to role data
-        g.urole = { name: { m: 'Rambler', f: 'Rambler' } };
-        g.urace = { adj: 'human' };
-
-        // Initialize PRNG
-        initRng(this._seed);
-        enableRngLog();
-
-        // Install display
-        if (this._pendingDisplay) {
-            g.nhDisplay = this._pendingDisplay;
-            this._pendingDisplay = null;
-        }
-
-        // Install capture hook
-        this._installCaptureHook();
-
-        // Run game startup
-        await newgame();
+    const animationCount =
+      typeof mod._nhjs_get_animation_count === 'function' ? mod.ccall('nhjs_get_animation_count', 'number', [], []) : 0;
+    const hasAnimationCursors =
+      typeof mod._nhjs_get_animation_cursor_col === 'function' &&
+      typeof mod._nhjs_get_animation_cursor_row === 'function';
+    const hasAnimationIds =
+      typeof mod._nhjs_get_animation_seq === 'function' && typeof mod._nhjs_get_animation_id === 'function';
+    for (let i = 0; i < animationCount; i++) {
+      this._animationFrames.push({
+        screen: mod.ccall('nhjs_get_animation_screen', 'string', ['number'], [i]),
+        cursor: hasAnimationCursors
+          ? [
+              mod.ccall('nhjs_get_animation_cursor_col', 'number', ['number'], [i]),
+              mod.ccall('nhjs_get_animation_cursor_row', 'number', ['number'], [i]),
+              1,
+            ]
+          : finalCursor,
+        seq: hasAnimationIds ? mod.ccall('nhjs_get_animation_seq', 'number', ['number'], [i]) : null,
+        anim: hasAnimationIds ? mod.ccall('nhjs_get_animation_id', 'number', ['number'], [i]) : null,
+      });
     }
 
-    _installCaptureHook() {
-        const nhGame = this;
-        game._preNhgetchHook = async () => {
-            const keyIdx = nhGame._nhgetchCount++;
-
-            // Capture RNG slice since last capture
-            const fullLog = getRngLog() || [];
-            const slice = fullLog.slice(nhGame._lastRngIdx);
-            nhGame._lastRngIdx = fullLog.length;
-
-            // Capture screen from the terminal grid. The fixture for
-            // screen scoring is the Terminal: contestants drive it
-            // however they like, judge reads back terminal.serialize()
-            // and compares to the C session's recorded screen.
-            const disp = game?.nhDisplay;
-            const term = disp?.terminal || disp;
-            nhGame._screens.push(term?.serialize ? term.serialize() : '');
-            nhGame._rngSlices.push(slice);
-
-            const cursor = disp ? [disp.cursorCol ?? 0, disp.cursorRow ?? 0, 1] : null;
-            nhGame._cursors.push(cursor);
-
-            // Commit animation frames accumulated since the previous
-            // input boundary as belonging to this step.  Frames are
-            // captured by animationFrame() into _pendingAnimFrames; we
-            // snapshot and reset here so the next step starts empty.
-            nhGame._animFramesByStep.push(nhGame._pendingAnimFrames);
-            nhGame._pendingAnimFrames = [];
-        };
+    try {
+      this._rngLog.push(...splitRngLog(mod.FS.readFile('/rng.log', { encoding: 'utf8' })));
+    } catch {
+      // A session can terminate before RNG logging is initialized.
     }
+    snapshotPersistentFs(mod.FS, this._storage);
+    if (this._pendingDisplay) attachInteractiveDisplay(this, this._pendingDisplay);
+  }
 
-    getScreens() { return this._screens; }
-    getCursors() { return this._cursors; }
-    getRngLog() { return getRngLog(); }
-    // Per-step PRNG slices, parallel to getScreens(). Each entry is the
-    // log of PRNG calls that fired since the previous capture (i.e.
-    // since the previous nhgetch). Useful for tooling like the PS
-    // visualizer that wants to attribute calls to individual keystrokes;
-    // the judge ignores this and uses getRngLog() flat.
-    getRngSlices() { return this._rngSlices; }
-    // Per-step animation frames, parallel to getScreens().  Each entry
-    // is the array of frames captured (via animationFrame()) between
-    // the previous input boundary and this one — i.e. the intermediate
-    // display states for that step's animation.  Empty inner arrays
-    // for steps that didn't animate.  SUPPLEMENTAL metric — not part
-    // of the official ranking; see API.md.
-    getAnimationFramesByStep() { return this._animFramesByStep; }
+  getScreens() {
+    return this._screens;
+  }
+  getCursors() {
+    return this._cursors;
+  }
+  getAnimationFrames() {
+    return this._animationFrames;
+  }
+  getRngLog() {
+    return this._rngLog;
+  }
+  getRngSlices() {
+    return [];
+  }
+  getStderr() {
+    return this._stderr;
+  }
+  getStorage() {
+    return this._storage;
+  }
 }
 
-// ── Per-segment runner — the contest contract ──
-//
-// The judge calls this once per segment. Input is a clean replay
-// descriptor with up to five fields (NO recorded answers):
-//
-//   { seed: number,        // PRNG seed
-//     datetime: string,    // fixed datetime "YYYYMMDDHHMMSS"
-//     nethackrc: string,   // game-options rc text
-//     moves: string,       // raw key sequence to replay from launch
-//     storage: object }    // Web-Storage-shaped (getItem/setItem/...)
-//                          //   handle for cross-segment persistence —
-//                          //   shared across all segments of a
-//                          //   session. The browser passes a
-//                          //   localStorage-backed view so save files
-//                          //   survive page reload too.
-//
-// Each call returns a self-contained game whose getScreens() /
-// getRngLog() / getCursors() / getAnimationFramesByStep() cover ONLY
-// this segment. The harness concatenates them itself. Cross-segment
-// C-side state (bones, record file, save) lives in `input.storage`.
-export async function runSegment(input) {
-    const { seed, nethackrc, storage } = input;
-    const moves = input.moves || '';
-
-    const nhGame = new NethackGame({ seed, nethackrc, storage });
-
-    const display = new GameDisplay(null);
-    display.onEmptyQueue = () => { throw new Error('Input queue empty - test may be missing keystrokes'); };
-    nhGame._pendingDisplay = display;
-
-    for (const ch of moves) display.pushKey(ch.charCodeAt(0));
-
-    await nhGame.start();
-
-    // Drive the game loop until input is exhausted. The judge looks
-    // at game.getScreens() afterwards; whatever the contestant
-    // captured is what gets compared.
-    const maxIter = Math.max(moves.length * 8, 1024);
-    for (let iter = 0; iter < maxIter; iter++) {
-        try {
-            await moveloop_core();
-        } catch (e) {
-            if (String(e?.message || '').includes('Input queue empty')) break;
-            throw e;
-        }
-    }
-
-    return nhGame;
+export async function runSegment(input, prevGame = null) {
+  const game = new NethackGame(input, prevGame);
+  await game.start();
+  return game;
 }
 
+export async function continueInteractiveGame(display, keyCode) {
+  const state = display?._nhjsInteractive;
+  if (!state) return false;
+  state.moves += String.fromCharCode(keyCode);
+  const game = new NethackGame({
+    seed: state.seed,
+    datetime: state.datetime,
+    nethackrc: state.nethackrc,
+    moves: state.moves,
+  });
+  await game.start();
+  state.game = game;
+  renderLatestCapturedScreen(game, display);
+  return true;
+}
