@@ -15,6 +15,23 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SESSIONS_DIR="${1:-$PROJECT_ROOT/sessions}"
 
+METADATA_PATH="$PROJECT_ROOT/.teleport/repo-metadata.json"
+METADATA_REL=".teleport/repo-metadata.json"
+TEMPLATE_METADATA='{ "category": "none" }'
+
+if [[ ! -f "$METADATA_PATH" ]]; then
+  echo "Error: missing $METADATA_REL." >&2
+  echo "This shouldn't happen! Please restore it from the template repo state, maybe with git." >&2
+  exit 2
+fi
+
+if [[ "$(cat "$METADATA_PATH")" == "$TEMPLATE_METADATA" ]]; then
+  echo "You need to set your repository's category before you can score!" >&2
+  echo "You can do it by calling ./frozen/set-category.sh <CATEGORY>." >&2
+  echo "See the README for a description of categories. Aborting..." >&2
+  exit 2
+fi
+
 # Overlay frozen infrastructure files. Three pieces of the contest
 # fixture are judge-owned:
 #   ISAAC64 (canonical PRNG sequence — has to be bit-exact across all
