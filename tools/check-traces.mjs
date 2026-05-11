@@ -856,6 +856,12 @@ function permissionArgs(sessionPath) {
 
 const maxWorkerOutput = 64 * 1024 * 1024;
 
+function outputTail(text, limit = 1200) {
+  const trimmed = String(text || "").trim();
+  if (trimmed.length <= limit) return trimmed;
+  return trimmed.slice(-limit);
+}
+
 function parsePositiveInt(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
@@ -915,7 +921,7 @@ function runParanoidWorker(sessionPath, timeoutMs) {
         error: error.message,
       });
     });
-    child.on("close", (status) => {
+    child.on("close", (status, signal) => {
       closed = true;
       clearTimeout(timer);
       if (outputTooLarge) {
@@ -928,13 +934,14 @@ function runParanoidWorker(sessionPath, timeoutMs) {
         return;
       }
       if (timedOut || (status ?? 0) !== 0) {
+        const detail = outputTail(stderr || stdout);
         resolve({
           session: basename(sessionPath),
           passed: false,
           classification: "runtime-error",
           error: timedOut
             ? `worker timed out after ${timeoutMs}ms`
-            : (stderr || "").trim() || `exit ${status}`,
+            : detail || `exit ${status}${signal ? ` signal ${signal}` : ""}`,
         });
         return;
       }
@@ -942,11 +949,19 @@ function runParanoidWorker(sessionPath, timeoutMs) {
       const marker = "__PARANOID_RESULT__";
       const idx = stdout.lastIndexOf(marker);
       if (idx < 0) {
+        const stderrTail = outputTail(stderr);
+        const stdoutTail = outputTail(stdout);
         resolve({
           session: basename(sessionPath),
           passed: false,
           classification: "runtime-error",
-          error: "worker output missing __PARANOID_RESULT__ marker",
+          error: [
+            "worker output missing __PARANOID_RESULT__ marker",
+            stderrTail ? `stderr tail: ${stderrTail}` : "",
+            stdoutTail ? `stdout tail: ${stdoutTail}` : "",
+          ]
+            .filter(Boolean)
+            .join("; "),
         });
         return;
       }
