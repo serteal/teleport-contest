@@ -834,6 +834,33 @@ term_start_color(int color)
     special = glyphinfo->gm.glyphflags;`,
     );
   }
+  if (!wintty.includes("c2js mirrors askname erase in NOMUX")) {
+    wintty = wintty.replace(
+      `#else
+                    (void) putchar('\\b');
+                    (void) putchar(' ');
+                    (void) putchar('\\b');
+#endif
+                }
+                continue;`,
+      `#else
+                    (void) putchar('\\b');
+                    (void) putchar(' ');
+                    (void) putchar('\\b');
+#endif
+#ifdef NOMUX_CAPTURE
+#ifndef WIN32CON
+                    if (ttyDisplay->curx > 0) {
+                        /* c2js mirrors askname erase in NOMUX. */
+                        ttyDisplay->curx--;
+                        nomux_putch(' ');
+                    }
+#endif
+#endif
+                }
+                continue;`,
+    );
+  }
   writeFileSync(winttyPath, wintty);
 }
 

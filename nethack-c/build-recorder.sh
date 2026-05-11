@@ -139,6 +139,12 @@ cd "$RECORDER_DIR"
 export SOURCE_DATE_EPOCH="${TELEPORT_BUILD_EPOCH:-1777723200}"
 make -j"$NPROC" SYSCFLAGS="$LUA_SYSCFLAGS" >/dev/null
 make install >/dev/null
+cat > "$INSTALL_PREFIX/games/lib/nethackdir/sysconf" <<'EOF'
+WIZARDS=*
+EXPLORERS=*
+SHELLERS=*
+MAXPLAYERS=10
+EOF
 echo
 echo "[ok] recorder built: $RECORDER_DIR/src/nethack"
 echo "[ok] installed to:    $INSTALL_PREFIX/games/lib/nethackdir/"

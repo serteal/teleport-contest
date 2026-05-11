@@ -1,18 +1,16 @@
 #!/usr/bin/env node
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { normalizeSession } from "../frozen/session_loader.mjs";
+import { runSegment } from "../js/jsmain.js";
 import {
-  existsSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-} from 'node:fs';
-import { basename, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { normalizeSession } from '../frozen/session_loader.mjs';
-import { runSegment } from '../js/jsmain.js';
-import { projectRoot } from './c2js/c2js.config.mjs';
+  canonicalizeTerminalScreen,
+  normalizeTerminalVariants,
+} from "../js/terminal-canonical.js";
+import { projectRoot } from "./c2js/c2js.config.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
-const startupVariantLines = [/Version\s+\d+\.\d+\.\d+[^\n]*/];
 
 function usage() {
   return `Usage: node ${scriptPath} [--json] [--limit N] <session-file-or-dir ...>
@@ -21,18 +19,17 @@ Find the first strict raw screen mismatch and print token-level context.`;
 }
 
 function normalizeScreenRaw(screen) {
-  let cur = String(screen || '');
-  for (const re of startupVariantLines) cur = cur.replace(re, '<<VERSION_BANNER>>');
-  return cur.replace(/^\d{2}:\d{2}:\d{2}\.$/gm, '<time>.');
+  return canonicalizeTerminalScreen(normalizeTerminalVariants(screen));
 }
 
 function visibleChar(ch) {
-  if (ch === '\n') return '\\n';
-  if (ch === '\x0e') return 'SO';
-  if (ch === '\x0f') return 'SI';
-  if (ch === '\x1b') return 'ESC';
+  if (ch === "\n") return "\\n";
+  if (ch === "\x0e") return "SO";
+  if (ch === "\x0f") return "SI";
+  if (ch === "\x1b") return "ESC";
   const code = ch.charCodeAt(0);
-  if (code < 32 || code === 127) return `\\x${code.toString(16).padStart(2, '0')}`;
+  if (code < 32 || code === 127)
+    return `\\x${code.toString(16).padStart(2, "0")}`;
   return ch;
 }
 
@@ -43,7 +40,7 @@ function tokenizeRaw(screen) {
   while (i < s.length) {
     const start = i;
     const ch = s[i];
-    if (ch === '\x1b' && s[i + 1] === '[') {
+    if (ch === "\x1b" && s[i + 1] === "[") {
       i += 2;
       while (i < s.length) {
         const code = s.charCodeAt(i);
@@ -51,25 +48,34 @@ function tokenizeRaw(screen) {
         if (code >= 0x40 && code <= 0x7e) break;
       }
       const raw = s.slice(start, i);
-      tokens.push({ kind: 'csi', raw, text: raw.replace('\x1b', 'ESC') });
+      tokens.push({ kind: "csi", raw, text: raw.replace("\x1b", "ESC") });
       continue;
     }
-    if (ch === '\n') {
+    if (ch === "\n") {
       i++;
-      tokens.push({ kind: 'nl', raw: ch, text: '\\n' });
+      tokens.push({ kind: "nl", raw: ch, text: "\\n" });
       continue;
     }
-    if (ch === '\x0e' || ch === '\x0f') {
+    if (ch === "\x0e" || ch === "\x0f") {
       i++;
-      tokens.push({ kind: ch === '\x0e' ? 'so' : 'si', raw: ch, text: visibleChar(ch) });
+      tokens.push({
+        kind: ch === "\x0e" ? "so" : "si",
+        raw: ch,
+        text: visibleChar(ch),
+      });
       continue;
     }
-    let text = '';
-    while (i < s.length && s[i] !== '\x1b' && s[i] !== '\n'
-           && s[i] !== '\x0e' && s[i] !== '\x0f') {
+    let text = "";
+    while (
+      i < s.length &&
+      s[i] !== "\x1b" &&
+      s[i] !== "\n" &&
+      s[i] !== "\x0e" &&
+      s[i] !== "\x0f"
+    ) {
       text += s[i++];
     }
-    tokens.push({ kind: 'text', raw: text, text });
+    tokens.push({ kind: "text", raw: text, text });
   }
   return tokens;
 }
@@ -77,15 +83,16 @@ function tokenizeRaw(screen) {
 function resolveSessionFiles(targets) {
   const files = [];
   for (const target of targets) {
-    const path = target.startsWith('/') ? target : join(projectRoot, target);
+    const path = target.startsWith("/") ? target : join(projectRoot, target);
     if (!existsSync(path)) throw new Error(`Not found: ${target}`);
     const st = statSync(path);
-    if (st.isFile() && path.endsWith('.session.json')) {
+    if (st.isFile() && path.endsWith(".session.json")) {
       files.push(path);
     } else if (st.isDirectory()) {
       for (const entry of readdirSync(path)) {
         const child = join(path, entry);
-        if (entry.endsWith('.session.json') && statSync(child).isFile()) files.push(child);
+        if (entry.endsWith(".session.json") && statSync(child).isFile())
+          files.push(child);
       }
     }
   }
@@ -100,6 +107,41 @@ function flattenCanonicalScreens(segments) {
     }
   }
   return screens;
+}
+
+function replayInputFor(segment) {
+  return {
+    seed: segment.seed,
+    datetime: segment.datetime,
+    nethackrc: segment.nethackrc,
+    moves: segment.moves,
+  };
+}
+
+function createStorageHandle() {
+  const storage = new Map();
+  return {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+    removeItem(key) {
+      storage.delete(key);
+    },
+    get length() {
+      return storage.size;
+    },
+    key(index) {
+      let n = 0;
+      for (const key of storage.keys()) {
+        if (n === index) return key;
+        n++;
+      }
+      return null;
+    },
+  };
 }
 
 function firstTokenMismatch(cScreen, jsScreen) {
@@ -126,19 +168,15 @@ function firstTokenMismatch(cScreen, jsScreen) {
 }
 
 async function checkSession(sessionPath) {
-  const data = JSON.parse(readFileSync(sessionPath, 'utf8'));
+  const data = JSON.parse(readFileSync(sessionPath, "utf8"));
   const segments = normalizeSession(data).segments;
-  let game = null;
+  const storage = createStorageHandle();
+  const jsScreens = [];
   for (const segment of segments) {
-    game = await runSegment({
-      seed: segment.seed,
-      datetime: segment.datetime,
-      nethackrc: segment.nethackrc,
-      moves: segment.moves,
-    }, game);
+    const game = await runSegment({ ...replayInputFor(segment), storage });
+    jsScreens.push(...(game?.getScreens?.() || []));
   }
   const cScreens = flattenCanonicalScreens(segments);
-  const jsScreens = game?.getScreens?.() || [];
   const total = Math.min(cScreens.length, jsScreens.length);
   for (let screenIndex = 0; screenIndex < total; screenIndex++) {
     const cRaw = normalizeScreenRaw(cScreens[screenIndex]);
@@ -160,8 +198,8 @@ async function checkSession(sessionPath) {
       path: sessionPath,
       screenIndex: total,
       counts: { c: cScreens.length, js: jsScreens.length },
-      cPrefix: normalizeScreenRaw(cScreens[total] || '').slice(0, 240),
-      jsPrefix: normalizeScreenRaw(jsScreens[total] || '').slice(0, 240),
+      cPrefix: normalizeScreenRaw(cScreens[total] || "").slice(0, 240),
+      jsPrefix: normalizeScreenRaw(jsScreens[total] || "").slice(0, 240),
       token: null,
     };
   }
@@ -172,10 +210,11 @@ function parseArgs(argv) {
   const opts = { json: false, limit: 1, targets: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '-h' || arg === '--help') opts.help = true;
-    else if (arg === '--json') opts.json = true;
-    else if (arg === '--limit') opts.limit = Number(argv[++i] || 1);
-    else if (arg.startsWith('--limit=')) opts.limit = Number(arg.slice('--limit='.length));
+    if (arg === "-h" || arg === "--help") opts.help = true;
+    else if (arg === "--json") opts.json = true;
+    else if (arg === "--limit") opts.limit = Number(argv[++i] || 1);
+    else if (arg.startsWith("--limit="))
+      opts.limit = Number(arg.slice("--limit=".length));
     else opts.targets.push(arg);
   }
   return opts;
@@ -209,7 +248,9 @@ async function main() {
   } else {
     for (const mismatch of mismatches) {
       console.log(`${mismatch.session} screen ${mismatch.screenIndex}`);
-      console.log(`  C screens ${mismatch.counts.c}, JS screens ${mismatch.counts.js}`);
+      console.log(
+        `  C screens ${mismatch.counts.c}, JS screens ${mismatch.counts.js}`,
+      );
       console.log(`  C prefix : ${JSON.stringify(mismatch.cPrefix)}`);
       console.log(`  JS prefix: ${JSON.stringify(mismatch.jsPrefix)}`);
       if (mismatch.token) {
@@ -221,7 +262,7 @@ async function main() {
   }
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error(`raw-screen-diff: ${error.message}`);
   process.exit(1);
 });

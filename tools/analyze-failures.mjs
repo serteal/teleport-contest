@@ -6,34 +6,42 @@ import {
   readFileSync,
   statSync,
   writeFileSync,
-} from 'node:fs';
-import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { normalizeSession } from '../frozen/session_loader.mjs';
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { normalizeSession } from "../frozen/session_loader.mjs";
 import {
   COLS_80,
   ROWS_24,
   decodeScreen,
   diffCell,
   renderCell,
-} from '../frozen/screen-decode.mjs';
-import { runSegment } from '../js/jsmain.js';
-import { projectRoot } from './c2js/c2js.config.mjs';
+} from "../frozen/screen-decode.mjs";
+import { runSegment } from "../js/jsmain.js";
+import {
+  canonicalizeTerminalScreen,
+  normalizeTerminalVariants,
+} from "../js/terminal-canonical.js";
+import { projectRoot } from "./c2js/c2js.config.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
-const defaultSessionsDir = join(projectRoot, 'sessions');
-const startupVariantLines = [/Version\s+\d+\.\d+\.\d+[^\n]*/];
+const defaultSessionsDir = join(projectRoot, "sessions");
 
 function usage() {
   return `Usage: node ${scriptPath} [--json] [--limit=N] [session-file-or-dir ...]`;
 }
 
 function isRngCall(entry) {
-  return typeof entry === 'string' && /^(?:rn2|rnd|rn1|rnl|rne|rnz|d)\(/.test(entry);
+  return (
+    typeof entry === "string" && /^(?:rn2|rnd|rn1|rnl|rne|rnz|d)\(/.test(entry)
+  );
 }
 
 function normalizeRng(entry) {
-  return String(entry || '').replace(/\s*@\s.*$/, '').replace(/^\d+\s+/, '').trim();
+  return String(entry || "")
+    .replace(/\s*@\s.*$/, "")
+    .replace(/^\d+\s+/, "")
+    .trim();
 }
 
 function extractRngCalls(rngArray) {
@@ -41,14 +49,17 @@ function extractRngCalls(rngArray) {
 }
 
 function preDecode(s) {
-  let cur = String(s || '');
-  for (const re of startupVariantLines) cur = cur.replace(re, '<<VERSION_BANNER>>');
-  return cur.replace(/^\d{2}:\d{2}:\d{2}\.$/gm, '<time>.');
+  return canonicalizeTerminalScreen(normalizeTerminalVariants(s));
 }
 
 function cursorEqual(a, b) {
-  return Array.isArray(a) && Array.isArray(b)
-    && a[0] === b[0] && a[1] === b[1] && (a[2] ?? 1) === (b[2] ?? 1);
+  return (
+    Array.isArray(a) &&
+    Array.isArray(b) &&
+    a[0] === b[0] &&
+    a[1] === b[1] &&
+    (a[2] ?? 1) === (b[2] ?? 1)
+  );
 }
 
 function cellState(cell) {
@@ -62,32 +73,34 @@ function cellState(cell) {
 }
 
 function renderedLine(grid, row) {
-  return grid[row].map(renderCell).join('').replace(/ +$/, '');
+  return grid[row].map(renderCell).join("").replace(/ +$/, "");
 }
 
 function colorLine(grid, row) {
   return grid[row]
-    .map(cell => {
-      if (renderCell(cell) !== ' ') return String(cell.color).slice(-1);
-      return cell.color === 8 && !cell.attr ? ' ' : String(cell.color).slice(-1);
+    .map((cell) => {
+      if (renderCell(cell) !== " ") return String(cell.color).slice(-1);
+      return cell.color === 8 && !cell.attr
+        ? " "
+        : String(cell.color).slice(-1);
     })
-    .join('')
-    .replace(/ +$/, '');
+    .join("")
+    .replace(/ +$/, "");
 }
 
 function attrLine(grid, row) {
   return grid[row]
-    .map(cell => {
-      if (renderCell(cell) === ' ' && !cell.attr) return ' ';
-      if (!cell.attr) return '.';
+    .map((cell) => {
+      if (renderCell(cell) === " " && !cell.attr) return " ";
+      if (!cell.attr) return ".";
       return cell.attr.toString(16);
     })
-    .join('')
-    .replace(/ +$/, '');
+    .join("")
+    .replace(/ +$/, "");
 }
 
 function rawLine(screen, row) {
-  return String(screen || '').split('\n')[row] || '';
+  return String(screen || "").split("\n")[row] || "";
 }
 
 function summarizeScreenDiff(cScreen, jsScreen, cCursor, jsCursor) {
@@ -123,20 +136,20 @@ function summarizeScreenDiff(cScreen, jsScreen, cCursor, jsCursor) {
   }
 
   const rowList = [...rows].sort((a, b) => a - b);
-  const detailRows = [...new Set([
-    first?.row,
-    ...rowList.slice(0, 3),
-    0,
-    22,
-    23,
-  ].filter(row => row !== undefined && row >= 0 && row < ROWS_24))];
+  const detailRows = [
+    ...new Set(
+      [first?.row, ...rowList.slice(0, 3), 0, 22, 23].filter(
+        (row) => row !== undefined && row >= 0 && row < ROWS_24,
+      ),
+    ),
+  ];
 
   return {
     counts,
     first,
     rows: rowList,
     cursors: { c: cCursor || null, js: jsCursor || null },
-    samples: detailRows.map(row => ({
+    samples: detailRows.map((row) => ({
       row,
       cText: renderedLine(cGrid, row),
       jsText: renderedLine(jsGrid, row),
@@ -157,15 +170,16 @@ function visualScreensEqual(cScreen, jsScreen) {
 function resolveSessionFiles(targets) {
   const files = [];
   for (const target of targets) {
-    const path = target.startsWith('/') ? target : join(projectRoot, target);
+    const path = target.startsWith("/") ? target : join(projectRoot, target);
     if (!existsSync(path)) throw new Error(`Not found: ${target}`);
     const st = statSync(path);
-    if (st.isFile() && path.endsWith('.session.json')) {
+    if (st.isFile() && path.endsWith(".session.json")) {
       files.push(path);
     } else if (st.isDirectory()) {
       for (const entry of readdirSync(path)) {
         const child = join(path, entry);
-        if (entry.endsWith('.session.json') && statSync(child).isFile()) files.push(child);
+        if (entry.endsWith(".session.json") && statSync(child).isFile())
+          files.push(child);
       }
     }
   }
@@ -178,6 +192,32 @@ function replayInputFor(segment) {
     datetime: segment.datetime,
     nethackrc: segment.nethackrc,
     moves: segment.moves,
+  };
+}
+
+function createStorageHandle() {
+  const storage = new Map();
+  return {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+    removeItem(key) {
+      storage.delete(key);
+    },
+    get length() {
+      return storage.size;
+    },
+    key(index) {
+      let n = 0;
+      for (const key of storage.keys()) {
+        if (n === index) return key;
+        n++;
+      }
+      return null;
+    },
   };
 }
 
@@ -232,12 +272,15 @@ function firstRngMismatch(cRng, jsRng, rngSteps) {
   return {
     matched,
     total,
-    first: jsRng.length > total ? {
-      index: total,
-      c: null,
-      js: normalizeRng(jsRng[total]),
-      step: rngSteps[total] || null,
-    } : null,
+    first:
+      jsRng.length > total
+        ? {
+            index: total,
+            c: null,
+            js: normalizeRng(jsRng[total]),
+            step: rngSteps[total] || null,
+          }
+        : null,
   };
 }
 
@@ -245,16 +288,21 @@ function screenMetrics(cScreens, jsScreens) {
   const total = cScreens.length;
   let matched = 0;
   for (let i = 0; i < total; i++) {
-    if (visualScreensEqual(cScreens[i] || '', jsScreens[i] || '')) matched++;
+    if (visualScreensEqual(cScreens[i] || "", jsScreens[i] || "")) matched++;
   }
   return { matched, total };
 }
 
 function firstScreenMismatch(c, jsScreens, jsCursors) {
   for (let i = 0; i < c.screens.length; i++) {
-    const cScreen = c.screens[i] || '';
-    const jsScreen = jsScreens[i] || '';
-    const screenDiff = summarizeScreenDiff(cScreen, jsScreen, c.cursors[i], jsCursors[i]);
+    const cScreen = c.screens[i] || "";
+    const jsScreen = jsScreens[i] || "";
+    const screenDiff = summarizeScreenDiff(
+      cScreen,
+      jsScreen,
+      c.cursors[i],
+      jsCursors[i],
+    );
     if (screenDiff.counts.cell || screenDiff.counts.cursor) {
       return {
         index: i,
@@ -281,41 +329,61 @@ function firstScreenMismatch(c, jsScreens, jsCursors) {
 }
 
 function classify(result) {
-  if (result.error) return 'runtime-error';
-  if (result.rng.first) return 'rng-divergence';
+  if (result.error) return "runtime-error";
+  if (result.rng.first) return "rng-divergence";
   const first = result.screen.first;
-  if (!first) return 'pass';
+  if (!first) return "pass";
   const counts = first.diff.counts;
-  if (counts.cell === 0 && counts.cursor) return 'cursor-only';
-  if (counts.char === 0 && counts.decgfx === 0 && counts.color > 0 && counts.attr === 0) {
-    return 'screen-color-only';
+  if (counts.cell === 0 && counts.cursor) return "cursor-only";
+  if (
+    counts.char === 0 &&
+    counts.decgfx === 0 &&
+    counts.color > 0 &&
+    counts.attr === 0
+  ) {
+    return "screen-color-only";
   }
-  if (counts.char === 0 && counts.decgfx === 0 && counts.attr > 0 && counts.color === 0) {
-    return 'screen-attr-only';
+  if (
+    counts.char === 0 &&
+    counts.decgfx === 0 &&
+    counts.attr > 0 &&
+    counts.color === 0
+  ) {
+    return "screen-attr-only";
   }
-  if (counts.char === 0 && counts.decgfx === 0 && (counts.color > 0 || counts.attr > 0)) {
-    return 'screen-style-only';
+  if (
+    counts.char === 0 &&
+    counts.decgfx === 0 &&
+    (counts.color > 0 || counts.attr > 0)
+  ) {
+    return "screen-style-only";
   }
-  if (counts.char > 0) return 'screen-char';
-  return 'screen-other';
+  if (counts.char > 0) return "screen-char";
+  return "screen-other";
 }
 
 async function analyzeSession(sessionPath) {
-  const data = JSON.parse(readFileSync(sessionPath, 'utf8'));
+  const data = JSON.parse(readFileSync(sessionPath, "utf8"));
   const segments = normalizeSession(data).segments;
   const c = flattenCanonical(segments);
 
-  let game = null;
+  const storage = createStorageHandle();
+  const jsRng = [];
+  const jsScreens = [];
+  const jsCursors = [];
   let error = null;
   try {
-    for (const segment of segments) game = await runSegment(replayInputFor(segment), game);
+    for (const segment of segments) {
+      const game = await runSegment({ ...replayInputFor(segment), storage });
+      jsRng.push(
+        ...(game?.getRngLog?.() || []).map(normalizeRng).filter(isRngCall),
+      );
+      jsScreens.push(...(game?.getScreens?.() || []));
+      jsCursors.push(...(game?.getCursors?.() || []));
+    }
   } catch (caught) {
     error = caught?.message || String(caught);
   }
-
-  const jsRng = (game?.getRngLog?.() || []).map(normalizeRng).filter(isRngCall);
-  const jsScreens = game?.getScreens?.() || [];
-  const jsCursors = game?.getCursors?.() || [];
 
   const result = {
     session: basename(sessionPath),
@@ -329,10 +397,11 @@ async function analyzeSession(sessionPath) {
     },
   };
   result.classification = classify(result);
-  result.passed = !error
-    && !result.rng.first
-    && result.rng.matched === result.rng.total
-    && result.screen.metrics.matched === result.screen.metrics.total;
+  result.passed =
+    !error &&
+    !result.rng.first &&
+    result.rng.matched === result.rng.total &&
+    result.screen.metrics.matched === result.screen.metrics.total;
   return result;
 }
 
@@ -349,42 +418,66 @@ function compactSample(sample) {
 }
 
 function printResult(result, limitRows) {
-  const status = result.passed ? 'PASS' : 'FAIL';
+  const status = result.passed ? "PASS" : "FAIL";
   const rng = result.rng;
   const screen = result.screen.metrics;
   console.log(`${status} ${result.session}`);
   console.log(`  class: ${result.classification}`);
   console.log(`  rng: ${rng.matched}/${rng.total}`);
-  console.log(`  screen: ${screen.matched}/${screen.total} (c=${result.screen.counts.c}, js=${result.screen.counts.js})`);
+  console.log(
+    `  screen: ${screen.matched}/${screen.total} (c=${result.screen.counts.c}, js=${result.screen.counts.js})`,
+  );
   if (result.error) console.log(`  error: ${result.error}`);
   if (rng.first) {
-    console.log(`  first rng mismatch #${rng.first.index}: C ${rng.first.c ?? '<missing>'} | JS ${rng.first.js ?? '<missing>'}`);
+    console.log(
+      `  first rng mismatch #${rng.first.index}: C ${rng.first.c ?? "<missing>"} | JS ${rng.first.js ?? "<missing>"}`,
+    );
     if (rng.first.step) {
-      console.log(`    at segment ${rng.first.step.segmentIndex}, step ${rng.first.step.stepIndex}, screen ${rng.first.step.screenIndex}`);
+      console.log(
+        `    at segment ${rng.first.step.segmentIndex}, step ${rng.first.step.stepIndex}, screen ${rng.first.step.screenIndex}`,
+      );
     }
   }
   if (result.screen.first) {
     const first = result.screen.first;
     const counts = first.diff.counts;
-    console.log(`  first screen mismatch #${first.index}: cells=${counts.cell}, char=${counts.char}, color=${counts.color}, attr=${counts.attr}, decgfx=${counts.decgfx}, cursor=${counts.cursor}`);
+    console.log(
+      `  first screen mismatch #${first.index}: cells=${counts.cell}, char=${counts.char}, color=${counts.color}, attr=${counts.attr}, decgfx=${counts.decgfx}, cursor=${counts.cursor}`,
+    );
     if (first.step) {
-      console.log(`    at segment ${first.step.segmentIndex}, step ${first.step.stepIndex}, key ${JSON.stringify(first.step.key)}`);
+      console.log(
+        `    at segment ${first.step.segmentIndex}, step ${first.step.stepIndex}, key ${JSON.stringify(first.step.key)}`,
+      );
     }
     if (first.diff.first) {
       const loc = first.diff.first;
-      console.log(`    first cell r${loc.row} c${loc.col}: C ${JSON.stringify(loc.c)} | JS ${JSON.stringify(loc.js)}`);
+      console.log(
+        `    first cell r${loc.row} c${loc.col}: C ${JSON.stringify(loc.c)} | JS ${JSON.stringify(loc.js)}`,
+      );
     }
-    console.log(`    cursor: C ${JSON.stringify(first.diff.cursors.c)} | JS ${JSON.stringify(first.diff.cursors.js)}`);
-    for (const sample of first.diff.samples.slice(0, limitRows).map(compactSample)) {
+    console.log(
+      `    cursor: C ${JSON.stringify(first.diff.cursors.c)} | JS ${JSON.stringify(first.diff.cursors.js)}`,
+    );
+    for (const sample of first.diff.samples
+      .slice(0, limitRows)
+      .map(compactSample)) {
       console.log(`    row ${sample.row} C : ${JSON.stringify(sample.cText)}`);
       console.log(`    row ${sample.row} JS: ${JSON.stringify(sample.jsText)}`);
       if (sample.cColor !== sample.jsColor) {
-        console.log(`    row ${sample.row} Cc: ${JSON.stringify(sample.cColor)}`);
-        console.log(`    row ${sample.row} Jc: ${JSON.stringify(sample.jsColor)}`);
+        console.log(
+          `    row ${sample.row} Cc: ${JSON.stringify(sample.cColor)}`,
+        );
+        console.log(
+          `    row ${sample.row} Jc: ${JSON.stringify(sample.jsColor)}`,
+        );
       }
       if (sample.cAttr !== sample.jsAttr) {
-        console.log(`    row ${sample.row} Ca: ${JSON.stringify(sample.cAttr)}`);
-        console.log(`    row ${sample.row} Ja: ${JSON.stringify(sample.jsAttr)}`);
+        console.log(
+          `    row ${sample.row} Ca: ${JSON.stringify(sample.cAttr)}`,
+        );
+        console.log(
+          `    row ${sample.row} Ja: ${JSON.stringify(sample.jsAttr)}`,
+        );
       }
     }
   }
@@ -393,26 +486,34 @@ function printResult(result, limitRows) {
 function summarize(results) {
   const byClass = new Map();
   for (const result of results) {
-    byClass.set(result.classification, (byClass.get(result.classification) || 0) + 1);
+    byClass.set(
+      result.classification,
+      (byClass.get(result.classification) || 0) + 1,
+    );
   }
   return {
     total: results.length,
-    passed: results.filter(result => result.passed).length,
-    byClass: Object.fromEntries([...byClass.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
+    passed: results.filter((result) => result.passed).length,
+    byClass: Object.fromEntries(
+      [...byClass.entries()].sort((a, b) => a[0].localeCompare(b[0])),
+    ),
   };
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.includes('--help') || args.includes('-h')) {
+  if (args.includes("--help") || args.includes("-h")) {
     console.log(usage());
     return;
   }
 
-  const json = args.includes('--json');
-  const limitArg = args.find(arg => arg.startsWith('--limit='));
-  const limitRows = Math.max(1, Number(limitArg?.slice('--limit='.length) || 5));
-  const targets = args.filter(arg => !arg.startsWith('--'));
+  const json = args.includes("--json");
+  const limitArg = args.find((arg) => arg.startsWith("--limit="));
+  const limitRows = Math.max(
+    1,
+    Number(limitArg?.slice("--limit=".length) || 5),
+  );
+  const targets = args.filter((arg) => !arg.startsWith("--"));
   if (!targets.length) targets.push(defaultSessionsDir);
 
   const sessionFiles = resolveSessionFiles(targets);
@@ -422,7 +523,7 @@ async function main() {
     results.push(result);
     if (!json) {
       printResult(result, limitRows);
-      console.log('');
+      console.log("");
     }
   }
 
@@ -433,24 +534,28 @@ async function main() {
   };
 
   try {
-    const advisory = join(projectRoot, '.cache/session-analysis.json');
+    const advisory = join(projectRoot, ".cache/session-analysis.json");
     mkdirSync(dirname(advisory), { recursive: true });
     writeFileSync(advisory, JSON.stringify(bundle, null, 2));
   } catch (error) {
-    process.stderr.write(`(could not write analysis cache: ${error.message})\n`);
+    process.stderr.write(
+      `(could not write analysis cache: ${error.message})\n`,
+    );
   }
 
   if (json) {
     console.log(JSON.stringify(bundle));
   } else {
-    console.log(`Summary: ${bundle.summary.passed}/${bundle.summary.total} passing`);
+    console.log(
+      `Summary: ${bundle.summary.passed}/${bundle.summary.total} passing`,
+    );
     for (const [name, count] of Object.entries(bundle.summary.byClass)) {
       console.log(`  ${name}: ${count}`);
     }
   }
 }
 
-main().catch(error => {
-  console.error('Fatal:', error.message);
+main().catch((error) => {
+  console.error("Fatal:", error.message);
   process.exit(1);
 });

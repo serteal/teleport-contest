@@ -245,6 +245,8 @@ nhjs_next_input(void)
     ch = (unsigned char) *nhjs_moves_next++;
     if (ch == '\r')
         return '\n'; /* Recorder tty delivers Return to NetHack as LF. */
+    if (ch == '\b')
+        return '\177'; /* Browser/session traces encode Backspace as ^H. */
     return ch;
 }
 

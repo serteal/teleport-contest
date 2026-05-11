@@ -1,12 +1,17 @@
-import { InMemoryStorage } from './storage.js';
+import { InMemoryStorage } from "./storage.js";
 
-const VFS_PREFIX = 'vfs:';
-const FS_MANIFEST_PATH = '/.nhjs-fs-manifest.json';
-const SKIP_FS_PATHS = new Set([FS_MANIFEST_PATH, '/.nethackrc', '/rng.log', '/sysconf']);
-const SKIP_FS_PREFIXES = ['/dev', '/proc', '/home'];
+const VFS_PREFIX = "vfs:";
+const FS_MANIFEST_PATH = "/.nhjs-fs-manifest.json";
+const SKIP_FS_PATHS = new Set([
+  FS_MANIFEST_PATH,
+  "/.nethackrc",
+  "/rng.log",
+  "/sysconf",
+]);
+const SKIP_FS_PREFIXES = ["/dev", "/proc", "/home"];
 
-export function storageForGame(prevGame) {
-  return prevGame?._storage || prevGame?.getStorage?.() || new InMemoryStorage();
+export function storageForInput(input) {
+  return input?.storage || new InMemoryStorage();
 }
 
 function storageKey(path) {
@@ -14,7 +19,7 @@ function storageKey(path) {
 }
 
 function bytesToBase64(bytes) {
-  let binary = '';
+  let binary = "";
   const chunkSize = 0x8000;
   for (let i = 0; i < bytes.length; i += chunkSize) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
@@ -23,7 +28,7 @@ function bytesToBase64(bytes) {
 }
 
 function base64ToBytes(text) {
-  const binary = atob(text || '');
+  const binary = atob(text || "");
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
@@ -32,15 +37,15 @@ function base64ToBytes(text) {
 }
 
 function parentDir(path) {
-  if (!path || path === '/') return '/';
-  const idx = path.lastIndexOf('/');
-  return idx <= 0 ? '/' : path.slice(0, idx);
+  if (!path || path === "/") return "/";
+  const idx = path.lastIndexOf("/");
+  return idx <= 0 ? "/" : path.slice(0, idx);
 }
 
 function ensureDir(FS, path) {
-  if (!path || path === '/') return;
-  const parts = path.split('/').filter(Boolean);
-  let cur = '';
+  if (!path || path === "/") return;
+  const parts = path.split("/").filter(Boolean);
+  let cur = "";
   for (const part of parts) {
     cur += `/${part}`;
     try {
@@ -57,9 +62,11 @@ function ensureDir(FS, path) {
 }
 
 function shouldPersistFsPath(path) {
-  if (!path || path === '/') return false;
+  if (!path || path === "/") return false;
   if (SKIP_FS_PATHS.has(path)) return false;
-  return !SKIP_FS_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+  return !SKIP_FS_PREFIXES.some(
+    (prefix) => path === prefix || path.startsWith(`${prefix}/`),
+  );
 }
 
 function readStoredManifest(storage) {
@@ -84,7 +91,7 @@ export function restorePersistentFs(FS, storage) {
     try {
       const entry = JSON.parse(raw);
       ensureDir(FS, parentDir(path));
-      FS.writeFile(path, base64ToBytes(entry.data || ''));
+      FS.writeFile(path, base64ToBytes(entry.data || ""));
     } catch {
       // Ignore malformed persisted entries; the C side will recreate
       // default runtime files where possible.
@@ -106,8 +113,8 @@ export function snapshotPersistentFs(FS, storage) {
       return;
     }
     for (const entry of entries) {
-      if (entry === '.' || entry === '..') continue;
-      const path = dir === '/' ? `/${entry}` : `${dir}/${entry}`;
+      if (entry === "." || entry === "..") continue;
+      const path = dir === "/" ? `/${entry}` : `${dir}/${entry}`;
       if (!shouldPersistFsPath(path)) continue;
       let stat;
       try {
@@ -126,7 +133,7 @@ export function snapshotPersistentFs(FS, storage) {
           storage.setItem(
             storageKey(path),
             JSON.stringify({
-              encoding: 'base64',
+              encoding: "base64",
               data: bytesToBase64(data),
             }),
           );
@@ -138,7 +145,7 @@ export function snapshotPersistentFs(FS, storage) {
     }
   }
 
-  walk('/');
+  walk("/");
   for (const oldPath of previous?.files || []) {
     if (!liveFiles.has(oldPath)) storage.removeItem(storageKey(oldPath));
   }

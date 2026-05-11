@@ -1021,6 +1021,39 @@ function focusedSpecs() {
   const inventoryProbe = "i\u001b+\u001b\\\u001b\u0018 \u001bO\u001bss:";
 
   out.push(
+    spec("focused-name-prompt-line-editing", {
+      description:
+        "startup name prompt editing with escape retry, backspace, and prompt redraw",
+      source: "focused-curated",
+      tags: ["focused", "name", "prompt", "line-edit", "backspace", "escape"],
+      seed: 82000,
+      datetime: "20260506120000",
+      nethackrc: [
+        "OPTIONS=role:Samurai,race:human,gender:male,align:lawful",
+        "OPTIONS=!autopickup,!legacy,!tutorial,!splash_screen,pettype:none",
+        "OPTIONS=pushweapon,showexp,time,color,suppress_alert:3.4.3",
+        "OPTIONS=symset:DECgraphics",
+      ].join("\n"),
+      moves: "Temp\u001bAkirq\ba\r LLlkLLHjjjLLLL......HHHHHkkkkkkssss:",
+    }),
+  );
+
+  out.push(
+    spec("focused-getlin-line-editing", {
+      description:
+        "getlin editing with backspace, line kill, long engraving text, and message redraw",
+      source: "focused-curated",
+      tags: ["focused", "getlin", "line-edit", "backspace", "kill", "more"],
+      seed: 82010,
+      datetime: "20001111120000",
+      nethackrc: wizard("Getlin", ["msg_window:reversed", "msghistory:60"]),
+      moves:
+        "  nE-rough\b\u0015Final engraving text after line kill for terminal echo bookkeeping\r" +
+        "\u0010 \u001bss:",
+    }),
+  );
+
+  out.push(
     spec("focused-color-status-hilites-darkgray", {
       description:
         "status highlight rules, dark gray handling, menu colors, and three-line status redraws",
