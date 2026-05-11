@@ -63,7 +63,7 @@ against them with the existing analyzer.
 
 Options:
   --out DIR              Output directory (default .cache/local-traces)
-  --tier NAME            smoke | default | stress | edge (default default)
+  --tier NAME            smoke | default | stress | edge | deep (default default)
   --count N              Number of fuzz specs (tier default when omitted)
   --public-remix N       Number of public keyplan remixes (tier default when omitted)
   --public-mutation N    Number of public keyplan mutation specs (tier default when omitted)
@@ -143,9 +143,9 @@ function parseArgs(argv) {
     else throw new Error(`Unknown option: ${arg}`);
   }
 
-  if (!["smoke", "default", "stress", "edge"].includes(opts.tier)) {
+  if (!["smoke", "default", "stress", "edge", "deep"].includes(opts.tier)) {
     throw new Error(
-      `Unknown tier ${opts.tier}; expected smoke, default, stress, or edge`,
+      `Unknown tier ${opts.tier}; expected smoke, default, stress, edge, or deep`,
     );
   }
   if (opts.count != null && (!Number.isInteger(opts.count) || opts.count < 0)) {
@@ -1476,6 +1476,305 @@ function focusedSpecs() {
   return out;
 }
 
+function deepCuratedSpecs() {
+  const out = [];
+  const wizard = (name, options = [], lines = []) =>
+    rc({
+      name,
+      role: "Wizard",
+      race: "human",
+      gender: "female",
+      align: "neutral",
+      playmode: "debug",
+      options,
+      lines,
+    });
+
+  out.push(
+    spec("deep-wizard-branch-lua-tour", {
+      description:
+        "long wizard-mode branch tour through special-level generation, Lua rooms, menus, and redraws",
+      source: "deep-curated",
+      tags: [
+        "deep",
+        "wizard",
+        "levelchange",
+        "branch-tour",
+        "special-level",
+        "lua",
+        "redraw",
+        "overview",
+      ],
+      seed: 91001,
+      datetime: "20040929010101",
+      nethackrc: wizard("DeepLua", [
+        "lit_corridor",
+        "disclose:-i -a -v -g -c -o",
+      ]),
+      moves:
+        "  n#levelchange\n2\n  \u0012#levelchange\n3\n  \u0012#levelchange\n10\n  \u0012" +
+        "#levelchange\n20\n  \u0012#levelchange\n25\n  \u0012#levelchange\n30\n  \u0012" +
+        "#overview\n \u001b#conduct\n \u001b#vanquished\n \u001bi\u001b+\u001b\\\u001b\u0018 \u001bss:",
+    }),
+  );
+
+  out.push(
+    spec("deep-wizard-poly-monster-combat", {
+      description:
+        "polymorph, monster creation, conflict-style crowding, zap beams, and repeated combat turns",
+      source: "deep-curated",
+      tags: [
+        "deep",
+        "wizard",
+        "polyself",
+        "monster",
+        "combat",
+        "zap",
+        "animation",
+        "display-rng",
+      ],
+      seed: 91002,
+      datetime: "20260506120000",
+      nethackrc: wizard("DeepPoly", ["lit_corridor", "sparkle"]),
+      moves:
+        "  n\u0017blessed amulet of life saving\n\u0017wand of fire\n\u0017wand of cold\n" +
+        "#polyself\nred dragon\n #monster\nfloating eye\n #monster\nleocrotta\n " +
+        "#monster\nsoldier ant\n zhzjzlzk y y y hhhhhjjjjkkkkllll....i\u001bss:",
+    }),
+  );
+
+  out.push(
+    spec("deep-shop-object-state", {
+      description:
+        "shop interactions with worn items, unpaid object state, inventory menus, and object naming",
+      source: "deep-curated",
+      tags: [
+        "deep",
+        "shop",
+        "inventory",
+        "object-state",
+        "wear",
+        "name",
+        "menu",
+      ],
+      seed: 91003,
+      datetime: "20010401073000",
+      nethackrc: wizard("DeepShop", [
+        "menustyle:full",
+        "force_invmenu",
+        "menu_objsyms:both",
+      ]),
+      moves:
+        "  n\u0017blessed +3 speed boots\n\u0017cursed cloak of invisibility\n" +
+        "\u0017bag of holding\n\u001720 rocks\nWadbi\u001b#name\rDeep object label\r" +
+        "i\u001b+\u001b\\\u001b\u0018 \u001b#overview\n \u001bss:",
+    }),
+  );
+
+  out.push(
+    spec("deep-save-restore-bones-record", {
+      description:
+        "multi-segment save/restore, record-file output, death disclosure, and persisted VFS state",
+      source: "deep-curated",
+      tags: [
+        "deep",
+        "save-restore",
+        "multisegment",
+        "death",
+        "record-file",
+        "storage",
+        "disclosure",
+      ],
+      segments: [
+        {
+          seed: 91004,
+          datetime: "20001013090000",
+          nethackrc: wizard("DeepSave", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:yi ya yv yg yc yo",
+          ]),
+          moves:
+            "  n\u0017blessed +3 speed boots\n\u0017bag of holding\nLLLhhhjjj,,,i\u001bSy",
+        },
+        {
+          seed: 91005,
+          datetime: "20001013090000",
+          nethackrc: wizard("DeepSave", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:yi ya yv yg yc yo",
+          ]),
+          moves:
+            "i\u001b#conduct\n \u001b#vanquished\n \u001b\u0017wand of death\nzs.  yy yyyy ",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("deep-trap-terrain-status", {
+      description:
+        "terrain/status-heavy movement with loadstone burden, low HP, farlook, and repeated redraws",
+      source: "deep-curated",
+      tags: [
+        "deep",
+        "trap",
+        "terrain",
+        "status-line",
+        "burden",
+        "farlook",
+        "redraw",
+      ],
+      seed: 91006,
+      datetime: "20001111120000",
+      nethackrc: wizard("DeepTrap", [
+        "statuslines:3",
+        "terrainstatus",
+        "weaponstatus",
+        "hitpointbar",
+        "lit_corridor",
+      ]),
+      moves:
+        "  n\u0017loadstone\n\u0017corpse\n\u0017wand of digging\n" +
+        "hhjjkkllHHJJKKLL;hhhhllllkkkkjjjj\r \u001b/?trap\r /?door\r \u001b\u0012ss:",
+    }),
+  );
+
+  out.push(
+    spec("deep-color-wizmap-cavern", {
+      description:
+        "compact color-heavy wizard map redraw over deep levels, targeting NOMUX color-state capture",
+      source: "deep-curated",
+      tags: [
+        "deep",
+        "wizard",
+        "color",
+        "wizmap",
+        "levelchange",
+        "decgraphics",
+        "status-line",
+      ],
+      seed: 91007,
+      datetime: "20040929010101",
+      nethackrc: wizard("DeepColor", [
+        "windowborders:2",
+        "mention_walls",
+        "!use_darkgray",
+        "statuslines:3",
+        "terrainstatus",
+        "weaponstatus",
+        "hitpointbar",
+      ]),
+      moves:
+        "  n#levelchange\n33\n #wizmap\n \u001650\n \u001640\n #wizmap\n" +
+        "\u0012i\u001bss:",
+    }),
+  );
+
+  return out;
+}
+
+function deepPublicSpecs(limit) {
+  const publicSessions = readPublicSessions().filter(
+    ({ name, session }) =>
+      name !== "seed0030-ten-diverse-deaths.session.json" &&
+      Array.isArray(session.segments) &&
+      session.segments.length === 1 &&
+      String(session.segments[0].moves || "").length >= 250,
+  );
+  const candidates = publicSessions.sort(
+    (a, b) =>
+      String(b.session.segments[0].moves || "").length -
+      String(a.session.segments[0].moves || "").length,
+  );
+  const rcMutations = [
+    { suffix: "same-rc", lines: [], replaceOptions: [] },
+    {
+      suffix: "display-heavy",
+      lines: [
+        "OPTIONS=msg_window:reversed,msghistory:80,standout,lit_corridor",
+        "OPTIONS=statuslines:3,terrainstatus,weaponstatus,hitpointbar",
+      ],
+      replaceOptions: [
+        "msg_window",
+        "msghistory",
+        "standout",
+        "lit_corridor",
+        "statuslines",
+        "terrainstatus",
+        "weaponstatus",
+        "hitpointbar",
+      ],
+    },
+    {
+      suffix: "menu-heavy",
+      lines: [
+        "OPTIONS=menustyle:full,force_invmenu,menu_objsyms:both,menu_headings:cyan&inverse,menucolors",
+        'MENUCOLOR=" blessed "=green&bold',
+        'MENUCOLOR=" cursed "=red&inverse',
+      ],
+      replaceOptions: [
+        "menustyle",
+        "force_invmenu",
+        "menu_objsyms",
+        "menu_headings",
+        "menucolors",
+      ],
+    },
+    {
+      suffix: "enhanced-symbols",
+      symset: "Enhanced2",
+      lines: ["OPTIONS=windowborders:2,mention_walls,!use_darkgray"],
+      replaceOptions: [
+        "symset",
+        "windowborders",
+        "mention_walls",
+        "use_darkgray",
+      ],
+    },
+  ];
+  const out = [];
+  let index = 0;
+  while (out.length < limit && candidates.length) {
+    const entry = candidates[index % candidates.length];
+    const variant = Math.floor(index / candidates.length);
+    const mutation = rcMutations[variant % rcMutations.length];
+    const segment = entry.session.segments[0];
+    let nethackrc = removeRcOptions(
+      segment.nethackrc || "",
+      mutation.replaceOptions || [],
+    );
+    if (mutation.symset) nethackrc = setRcSymset(nethackrc, mutation.symset);
+    if (mutation.lines?.length)
+      nethackrc = appendRcLines(nethackrc, mutation.lines);
+    const originalMoves = String(segment.moves || "");
+    const maxLen = variant === 0 ? 2200 : 1400;
+    out.push(
+      spec(
+        `deep-public-${slugify(entry.name.replace(/\.session\.json$/, ""))}-${mutation.suffix}-${variant}`,
+        {
+          description: `hidden-like deep public keyplan remix from ${entry.name}`,
+          source: `deep-public:${entry.name}`,
+          tags: [
+            "deep",
+            "public-keyplan",
+            "seed-mutation",
+            "datetime-mutation",
+            mutation.suffix,
+          ],
+          seed: 92000 + index * 997 + Number(segment.seed || 0),
+          datetime: datetimes[(index * 5 + variant) % datetimes.length],
+          nethackrc,
+          moves: originalMoves.slice(0, maxLen),
+        },
+      ),
+    );
+    index++;
+  }
+  return out;
+}
+
 function readPublicSessions() {
   if (!existsSync(sessionsDir)) return [];
   return readdirSync(sessionsDir)
@@ -1713,6 +2012,13 @@ function tierDefaults(tier) {
       publicRemix: 44,
       publicMutation: 180,
     };
+  if (tier === "deep")
+    return {
+      curatedLimit: 0,
+      count: 0,
+      publicRemix: 40,
+      publicMutation: 0,
+    };
   return {
     curatedLimit: Infinity,
     count: 72,
@@ -1728,6 +2034,7 @@ function allSpecs(opts) {
     opts.tier === "edge" || opts.tier === "stress" ? edgeSpecs() : [];
   const focused =
     opts.tier === "edge" || opts.tier === "stress" ? focusedSpecs() : [];
+  const deep = opts.tier === "deep" ? deepCuratedSpecs() : [];
   const publicCount = opts.publicRemix ?? defaults.publicRemix;
   const mutationCount = opts.publicMutation ?? defaults.publicMutation;
   const fuzzCount = opts.count ?? defaults.count;
@@ -1735,7 +2042,9 @@ function allSpecs(opts) {
     ...curated,
     ...edge,
     ...focused,
-    ...remixPublicSpecs(publicCount),
+    ...deep,
+    ...(opts.tier === "deep" ? deepPublicSpecs(publicCount) : []),
+    ...(opts.tier === "deep" ? [] : remixPublicSpecs(publicCount)),
     ...publicMutationSpecs(mutationCount),
     ...fuzzSpecs(fuzzCount),
   ];
@@ -1831,6 +2140,7 @@ function recordTrace(traceSpec, opts) {
     );
   }
   canonicalizeRecordedSession(outputPath);
+  validateRecordedSession(outputPath);
   return { slug: traceSpec.slug, inputPath, outputPath };
 }
 
@@ -1861,6 +2171,44 @@ function canonicalizeRecordedSession(outputPath) {
     }
   }
   if (changed) writeFileSync(outputPath, `${JSON.stringify(session)}\n`);
+}
+
+function validateRecordedSession(outputPath) {
+  const session = JSON.parse(readFileSync(outputPath, "utf8"));
+  const markerPattern = /\x1b]7777;KIND=/;
+  for (const [segmentIndex, segment] of (session.segments || []).entries()) {
+    for (const [stepIndex, step] of (segment.steps || []).entries()) {
+      if (typeof step.screen === "string" && markerPattern.test(step.screen)) {
+        throw new Error(
+          `${outputPath}: leaked NOMUX marker in segment ${segmentIndex} step ${stepIndex}`,
+        );
+      }
+      for (const [frameIndex, frame] of (
+        step.animation_frames || []
+      ).entries()) {
+        if (
+          typeof frame.screen === "string" &&
+          markerPattern.test(frame.screen)
+        ) {
+          throw new Error(
+            `${outputPath}: leaked NOMUX marker in segment ${segmentIndex} step ${stepIndex} animation frame ${frameIndex}`,
+          );
+        }
+      }
+    }
+    for (const [frameIndex, frame] of (
+      segment.animation_frames || []
+    ).entries()) {
+      if (
+        typeof frame.screen === "string" &&
+        markerPattern.test(frame.screen)
+      ) {
+        throw new Error(
+          `${outputPath}: leaked NOMUX marker in segment ${segmentIndex} animation frame ${frameIndex}`,
+        );
+      }
+    }
+  }
 }
 
 function increment(object, key, amount = 1) {
