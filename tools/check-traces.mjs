@@ -20,13 +20,16 @@ import {
   renderCell,
 } from "../frozen/screen-decode.mjs";
 import { runSegment } from "../js/jsmain.js";
+import {
+  canonicalizeTerminalScreen,
+  normalizeTerminalVariants,
+} from "../js/terminal-canonical.js";
 import { projectRoot } from "./c2js/c2js.config.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const strictScorePath = join(projectRoot, "tools/strict-score.mjs");
 const preloadPath = join(projectRoot, "tools/sandbox/preload.mjs");
 const defaultSessionsDir = join(projectRoot, "sessions");
-const startupVariantLines = [/Version\s+\d+\.\d+\.\d+[^\n]*/];
 
 function usage() {
   return `Usage: node ${scriptPath} --mode competition|paranoid [options] [session-file-or-dir ...]
@@ -59,10 +62,7 @@ function normalizeRng(entry) {
 }
 
 function normalizeScreenRaw(screen) {
-  let cur = String(screen || "");
-  for (const re of startupVariantLines)
-    cur = cur.replace(re, "<<VERSION_BANNER>>");
-  return cur.replace(/^\d{2}:\d{2}:\d{2}\.$/gm, "<time>.");
+  return canonicalizeTerminalScreen(normalizeTerminalVariants(screen));
 }
 
 function preDecode(screen) {
@@ -333,6 +333,32 @@ function replayInputFor(segment) {
   };
 }
 
+function createStorageHandle() {
+  const storage = new Map();
+  return {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+    removeItem(key) {
+      storage.delete(key);
+    },
+    get length() {
+      return storage.size;
+    },
+    key(index) {
+      let n = 0;
+      for (const key of storage.keys()) {
+        if (n === index) return key;
+        n++;
+      }
+      return null;
+    },
+  };
+}
+
 function flattenCanonical(segments) {
   const coreRng = [];
   const displayRng = [];
@@ -342,7 +368,7 @@ function flattenCanonical(segments) {
   const cursors = [];
   const screenSteps = [];
   const animations = [];
-  let animationsRecorded = true;
+  let animationsRecorded = false;
 
   segments.forEach((segment, segmentIndex) => {
     (segment.steps || []).forEach((step, stepIndex) => {
@@ -367,19 +393,20 @@ function flattenCanonical(segments) {
           key: step.key ?? segment.moves?.[stepIndex] ?? null,
         });
       }
+      if (Object.hasOwn(step, "animation_frames")) {
+        animationsRecorded = true;
+      }
+      for (const frame of step.animation_frames || []) {
+        animations.push({
+          segmentIndex,
+          stepIndex,
+          screen: frame.screen || "",
+          cursor: frame.cursor || [0, 0, 1],
+          seq: frame.seq ?? null,
+          anim: frame.anim ?? null,
+        });
+      }
     });
-    if (!Object.hasOwn(segment, "animation_frames")) {
-      animationsRecorded = false;
-    }
-    for (const frame of segment.animation_frames || []) {
-      animations.push({
-        segmentIndex,
-        screen: frame.screen || "",
-        cursor: frame.cursor || [0, 0, 1],
-        seq: frame.seq ?? null,
-        anim: frame.anim ?? null,
-      });
-    }
   });
 
   return {
@@ -544,7 +571,59 @@ function emptyAnimationComparison(cAnimations, jsAnimations, extra = {}) {
       exact: true,
       first: null,
     },
+    stepCounts: {
+      matched: cAnimations.length,
+      total: cAnimations.length,
+      exact: true,
+      first: null,
+    },
     countMismatch: null,
+  };
+}
+
+function animationStepKey(frame) {
+  return `${frame.segmentIndex ?? 0}:${frame.stepIndex ?? 0}`;
+}
+
+function compareAnimationStepCounts(cAnimations, jsAnimations) {
+  const cCounts = new Map();
+  const jsCounts = new Map();
+  for (const frame of cAnimations) {
+    const key = animationStepKey(frame);
+    cCounts.set(key, (cCounts.get(key) || 0) + 1);
+  }
+  for (const frame of jsAnimations) {
+    const key = animationStepKey(frame);
+    jsCounts.set(key, (jsCounts.get(key) || 0) + 1);
+  }
+  const keys = [...new Set([...cCounts.keys(), ...jsCounts.keys()])].sort(
+    (a, b) => {
+      const [as, ai] = a.split(":").map(Number);
+      const [bs, bi] = b.split(":").map(Number);
+      return as - bs || ai - bi;
+    },
+  );
+  let matched = 0;
+  for (const key of keys) {
+    const c = cCounts.get(key) || 0;
+    const js = jsCounts.get(key) || 0;
+    if (c === js) {
+      matched++;
+      continue;
+    }
+    const [segmentIndex, stepIndex] = key.split(":").map(Number);
+    return {
+      matched,
+      total: keys.length,
+      exact: false,
+      first: { segmentIndex, stepIndex, c, js },
+    };
+  }
+  return {
+    matched,
+    total: keys.length,
+    exact: true,
+    first: null,
   };
 }
 
@@ -650,6 +729,7 @@ function compareAnimations(cAnimations, jsAnimations, recorded = true) {
       exact: countExact && metadataMatched === cAnimations.length,
       first: firstMetadata,
     },
+    stepCounts: compareAnimationStepCounts(cAnimations, js),
     countMismatch: countExact
       ? null
       : {
@@ -672,6 +752,7 @@ function classifyParanoid(result) {
   if (!result.screen.raw.exact) return "raw-screen";
   if (
     result.animations.countMismatch ||
+    !result.animations.stepCounts.exact ||
     !result.animations.visual.exact ||
     !result.animations.cursor.exact ||
     !result.animations.raw.exact ||
@@ -686,25 +767,44 @@ async function runParanoidSession(sessionPath) {
   const segments = normalizeSession(data).segments;
   const c = flattenCanonical(segments);
 
-  let game = null;
+  const storage = createStorageHandle();
+  const jsAllRng = [];
+  const jsScreens = [];
+  const jsCursors = [];
+  const jsAnimations = [];
   let error = null;
   try {
-    for (const segment of segments)
-      game = await runSegment(replayInputFor(segment), game);
+    for (const [segmentIndex, segment] of segments.entries()) {
+      const game = await runSegment({ ...replayInputFor(segment), storage });
+      jsAllRng.push(
+        ...(game?.getRngLog?.() || [])
+          .map(normalizeRng)
+          .filter((entry) => isCoreRngCall(entry) || isDisplayRngCall(entry)),
+      );
+      jsScreens.push(...(game?.getScreens?.() || []));
+      jsCursors.push(...(game?.getCursors?.() || []));
+      const byStep = game?.getAnimationFramesByStep?.() || [];
+      for (const [stepIndex, frames] of byStep.entries()) {
+        for (const frame of frames || []) {
+          jsAnimations.push({
+            segmentIndex,
+            stepIndex,
+            screen: frame.screen || "",
+            cursor: frame.cursor || [0, 0, 1],
+            seq: frame.seq ?? null,
+            anim: frame.anim ?? null,
+          });
+        }
+      }
+    }
   } catch (caught) {
     error = caught?.message || String(caught);
   }
 
-  const jsAllRng = (game?.getRngLog?.() || [])
-    .map(normalizeRng)
-    .filter((entry) => isCoreRngCall(entry) || isDisplayRngCall(entry));
   const jsCoreRng = jsAllRng.filter(isCoreRngCall);
   const jsDisplayRng = jsAllRng.filter(isDisplayRngCall);
   const cHasDisplayRng = c.displayRng.length > 0;
   const comparableJsAllRng = cHasDisplayRng ? jsAllRng : jsCoreRng;
-  const jsScreens = game?.getScreens?.() || [];
-  const jsCursors = game?.getCursors?.() || [];
-  const jsAnimations = game?.getAnimationFrames?.() || [];
 
   const result = {
     session: basename(sessionPath),
@@ -942,7 +1042,7 @@ function printParanoidResult(result) {
     );
   } else {
     console.log(
-      `  animations visual/raw/cursor/meta: ${result.animations.visual.matched}/${result.animations.visual.total}, ${result.animations.raw.matched}/${result.animations.raw.total}, ${result.animations.cursor.matched}/${result.animations.cursor.total}, ${result.animations.metadata.matched}/${result.animations.metadata.total} (C ${result.animations.counts.c}, JS ${result.animations.counts.js})`,
+      `  animations visual/raw/cursor/meta/steps: ${result.animations.visual.matched}/${result.animations.visual.total}, ${result.animations.raw.matched}/${result.animations.raw.total}, ${result.animations.cursor.matched}/${result.animations.cursor.total}, ${result.animations.metadata.matched}/${result.animations.metadata.total}, ${result.animations.stepCounts.matched}/${result.animations.stepCounts.total} (C ${result.animations.counts.c}, JS ${result.animations.counts.js})`,
     );
   }
   const first =
@@ -1009,6 +1109,12 @@ function printParanoidResult(result) {
   if (result.animations.countMismatch) {
     console.log(
       `  animation count mismatch: C ${result.animations.countMismatch.c}, JS ${result.animations.countMismatch.js}`,
+    );
+  }
+  if (result.animations.stepCounts?.first) {
+    const step = result.animations.stepCounts.first;
+    console.log(
+      `  first animation step-count mismatch: segment ${step.segmentIndex}, step ${step.stepIndex}, C ${step.c}, JS ${step.js}`,
     );
   }
   if (result.animations.visual.first) {

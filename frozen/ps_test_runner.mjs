@@ -238,9 +238,11 @@ function replayInputFor(segment) {
 }
 
 // Run one full session: normalize, loop segments, call the
-// contestant's runSegment(input, prevGame) for each. The contestant's
-// game accumulates screens/RNG across segments; we read them back at
-// the end and compare to what C recorded.
+// contestant's runSegment(input) for each. Each call returns a
+// self-contained per-segment game; we concatenate per-segment outputs
+// harness-side and compare to what C recorded. Cross-segment state
+// (save files, bones, record) flows through `input.storage`, a
+// Web-Storage-shaped Map shared across all segments of the session.
 async function runSession(sessionPath) {
     const sessionData = JSON.parse(readFileSync(sessionPath, 'utf8'));
     const { normalizeSession } = await import('./session_loader.mjs');
@@ -253,30 +255,60 @@ async function runSession(sessionPath) {
     // Flatten C-side RNG + screens across all segments (judge totals).
     const cRng = [];
     const cScreens = [];
+    // Per-step canonical animation frames, flat across segments,
+    // indexed identically to cScreens.  Used for the SUPPLEMENTAL
+    // animFrames metric (not folded into pass/fail).
+    const cAnimByStep = [];
     for (const seg of segments) {
         for (const step of seg.steps || []) {
             cRng.push(...extractRngCalls(step.rng));
             if (step.screen) cScreens.push(step.screen);
+            cAnimByStep.push(Array.isArray(step.animation_frames)
+                ? step.animation_frames
+                : []);
         }
     }
 
-    let game = null;
+    // One shared Web-Storage-shaped Map per session.
+    const storage = new Map();
+    const storageHandle = {
+        getItem(k) { return storage.has(k) ? storage.get(k) : null; },
+        setItem(k, v) { storage.set(k, String(v)); },
+        removeItem(k) { storage.delete(k); },
+        get length() { return storage.size; },
+        key(i) {
+            let n = 0;
+            for (const k of storage.keys()) { if (n === i) return k; n++; }
+            return null;
+        },
+    };
+
+    // Per-segment outputs accumulated harness-side.
+    let jsRng = [];
+    let jsScreens = [];
+    let jsAnimByStep = [];
+    let jsCursors = [];
+    let lastGame = null;
     let jsError = null;
     try {
         for (const seg of segments) {
-            game = await runSegment(replayInputFor(seg), game);
+            const input = { ...replayInputFor(seg), storage: storageHandle };
+            const segGame = await runSegment(input);
+            const segRng = (segGame.getRngLog?.() || []).map(e =>
+                typeof e === 'string' ? e.replace(/^\d+\s+/, '') : String(e)
+            ).filter(isRngCall);
+            jsRng.push(...segRng);
+            jsScreens.push(...(segGame.getScreens?.() || []));
+            jsCursors.push(...(segGame.getCursors?.() || []));
+            if (typeof segGame.getAnimationFramesByStep === 'function') {
+                jsAnimByStep.push(...segGame.getAnimationFramesByStep());
+            }
+            lastGame = segGame;
         }
     } catch (e) {
         jsError = e.message;
     }
-
-    let jsRng = [];
-    let jsScreens = [];
-    if (game) {
-        const rngLog = game.getRngLog() || [];
-        jsRng = rngLog.map(e => e.replace(/^\d+\s+/, '')).filter(isRngCall);
-        jsScreens = game.getScreens() || [];
-    }
+    const game = lastGame;
 
     const rngTotal = cRng.length;
     let rngMatched = 0;
@@ -290,12 +322,32 @@ async function runSession(sessionPath) {
         if (screensVisuallyEqual(jsScreens[i] || '', cScreens[i] || '')) screenMatched++;
     }
 
+    // SUPPLEMENTAL: per-step animation frames.  Same comparator as the
+    // boundary screens; total = canonical frame count; matched =
+    // positional cell-equal frames.  Does NOT influence `passed`.
+    let animMatched = 0;
+    let animTotal = 0;
+    const animLimit = Math.min(cAnimByStep.length, screenTotal);
+    for (let i = 0; i < animLimit; i++) {
+        const cFrames = cAnimByStep[i] || [];
+        const jFrames = jsAnimByStep[i] || [];
+        animTotal += cFrames.length;
+        for (let f = 0; f < cFrames.length; f++) {
+            const jf = jFrames[f];
+            if (jf && screensVisuallyEqual(jf.screen || '', cFrames[f].screen || '')) {
+                animMatched++;
+            }
+        }
+    }
+
     return {
         session: basename(sessionPath),
         passed: !jsError && rngMatched === rngTotal && screenMatched === screenTotal,
         metrics: {
             rngCalls: { matched: rngMatched, total: rngTotal },
             screens: { matched: screenMatched, total: screenTotal },
+            // Supplemental — never combined with rngCalls/screens for ranking.
+            animFrames: { matched: animMatched, total: animTotal },
         },
         error: jsError,
     };
@@ -356,7 +408,7 @@ async function main() {
             result = {
                 session: basename(sf),
                 passed: false,
-                metrics: { rngCalls: { matched: 0, total: 0 }, screens: { matched: 0, total: 0 } },
+                metrics: { rngCalls: { matched: 0, total: 0 }, screens: { matched: 0, total: 0 }, animFrames: { matched: 0, total: 0 } },
                 error: err,
             };
         } else {
@@ -366,7 +418,7 @@ async function main() {
                 result = {
                     session: basename(sf),
                     passed: false,
-                    metrics: { rngCalls: { matched: 0, total: 0 }, screens: { matched: 0, total: 0 } },
+                    metrics: { rngCalls: { matched: 0, total: 0 }, screens: { matched: 0, total: 0 }, animFrames: { matched: 0, total: 0 } },
                     error: 'worker output missing __RESULT_ONE__ marker',
                 };
             } else {

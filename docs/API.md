@@ -39,6 +39,7 @@ Then it compares positionally:
 | **PRNG** | Every entry in `rngLog` is positionally checked against the C trace. Format and ordering are exact. |
 | **Screen** | Every entry in `screens` is decoded into a 24×80 cell grid and cell-compared against the recorded C frame. Two encodings that produce the same pixels match. |
 | **Cursor** | Tiebreaker only — match if you can. |
+| **Animation frames** | **Supplemental, not part of ranking.** If your port calls `await game.animationFrame()` between intermediate display states (zap beams, thrown objects, hurtle steps, runmode-walk travel), each captured frame is positionally checked against C's. Reported on the leaderboard as a separate `Anim%` column. See "Animation frames" below. |
 
 **Partial credit:** your score is the number of steps where the
 rendered screen matches C, summed across all sessions. A session
@@ -74,35 +75,74 @@ That's all. **The recorded screens, cursors, and RNG calls are not
 passed in** — you can't peek at the answer key. You have to actually
 port the game.
 
-## `prevGame` — multi-segment state
+## `opts.storage` — cross-segment persistence
+
+Save files, bones, the record/scoreboard file, and any other game
+state that must survive across segments of a session — or across a
+browser page reload — flow through a single Web-Storage-shaped
+object the harness gives you in `input.storage`:
+
+```js
+runSegment({ seed, datetime, nethackrc, moves, storage })
+```
+
+`storage` exposes `getItem`, `setItem`, `removeItem`, `length`, and
+`key`. The judge sandbox creates one Map-backed instance per session
+and passes the **same instance** to every segment of that session, so
+save state written during segment 1 is readable during segment 2.
+The browser at `/play/<owner>/` passes a `localStorage`-backed view
+namespaced to `vfs:<owner>:` so save files written from the page
+survive a reload (and don't collide with other forks' saves). Both
+contexts use the same shape, so a port that honors `opts.storage`
+gets correct multi-segment scoring and browser save/restore from one
+implementation.
+
+If your port doesn't have save/restore yet, just ignore `storage`;
+the field sits unused and your single-segment scoring is unaffected.
+
+## Per-segment isolation
 
 A "session" can be multiple consecutive games (a save/restore, a
 chained `#quit`/new-game sequence, a bones-leaving death/new-game
-pair). `runSegment` is called once per segment with the previous
-segment's returned `game` as the second argument:
+pair). `runSegment` is called once per segment with **only its
+segment input**:
 
 ```js
-let game = null;
 for (const segment of session.segments) {
-    game = await runSegment(segment, game);  // gets previous game as 2nd arg
+    await runSegment({ ...segment, storage });
 }
 ```
 
-`prevGame` is `null` on the first segment of a session and the
-previous segment's returned `game` afterward. You're responsible for
-preserving any C-side cross-segment state (record file, bones, save)
-across calls.
+Each call returns a self-contained game. `getScreens()`,
+`getRngLog()`, `getCursors()`, and `getAnimationFramesByStep()`
+should cover **only that segment** — the harness concatenates them
+itself. Persistent C-side state (save file, bones, record) lives in
+`storage`; nothing else needs to cross the segment boundary.
 
 ## `game` — what you return
 
-Any object with three methods. Their cumulative output across all
-segments of a session is what gets compared.
+Any object with the following methods. Their cumulative output across
+all segments of a session is what gets compared.
 
 ```js
 {
     getScreens():  string[],         // one per input boundary
     getRngLog():   string[],         // every PRNG call in order
-    getCursors():  [col, row, vis][] // cursor at each boundary
+    getCursors():  [col, row, vis][],// cursor at each boundary
+
+    // OPTIONAL — supplemental scoring only.
+    //
+    // Frames are populated automatically when you call
+    // `await game.animationFrame()` inside your animation code (see
+    // "Animation frames" below).  If you don't call it, every entry
+    // is an empty array and your official RNG/screen score is
+    // unaffected.
+    //
+    // Returns one inner array per step (length matches
+    // getScreens().length), each holding the frames captured during
+    // that step in emission order.  Frames have shape { screen,
+    // cursor }, same encoding as a regular boundary capture.
+    getAnimationFramesByStep(): { screen: string, cursor: [c,r,v] }[][]
 }
 ```
 
@@ -150,6 +190,59 @@ C-side recordings carry).
 
 Currently scored as a tiebreaker only — match it if you can; not
 required for a session to pass.
+
+### Animation frames — supplemental, optional
+
+NetHack draws **intermediate animation frames** during certain
+actions: zap beams travelling across the dungeon, thrown objects in
+flight, hurtle steps after a knockback, explosion expansions. The C
+recorder captures each of these and stores them inside the canonical
+session JSON, nested under the step they fired during:
+
+```json
+{
+    "key": "z", "rng": [...], "screen": "<final boundary>",
+    "animation_frames": [
+        { "screen": "<intermediate frame 0>", "cursor": [c,r,v] },
+        { "screen": "<intermediate frame 1>", "cursor": [c,r,v] },
+        ...
+    ]
+}
+```
+
+If your port reproduces these intermediate frames, just call:
+
+```js
+await game.animationFrame();
+```
+
+inside whatever you wrote as the equivalent of NetHack's
+`nh_delay_output()` (or wherever else you'd flush a mid-animation
+frame). That single call:
+
+1. Captures the current `terminal.serialize()` + cursor and stores
+   it in the per-step buffer.
+2. Yields the event loop, so the browser's paint loop has a chance
+   to flush DOM cell updates between frames before the next animation
+   step writes over them.
+
+**Same code in every runtime.** Contestant code always writes
+`await game.animationFrame()` — there is no `mode` parameter, no
+feature detection, no separate code path. Inside the canonical
+implementation the yield uses `requestAnimationFrame` when one is
+available (so the browser actually paints between frames in
+`/play/<owner>/`) and falls back to a microtask yield in Node
+(judge sandbox + local `score.sh`), where the Terminal is a pure
+data structure and there is no paint loop to wait for. That choice
+is invisible to your code.
+
+**Animation frames are scored separately and are not part of the
+official ranking.** They contribute a supplemental `Anim%` column on
+the leaderboard so contestants who reproduce them get visible
+credit, but a session passes or fails purely on RNG + screen match
+at input boundaries. Sessions with no animation activity have empty
+inner arrays at every step. If you never call `animationFrame()`,
+every step's entry is empty and your official score is unaffected.
 
 ## What's frozen
 

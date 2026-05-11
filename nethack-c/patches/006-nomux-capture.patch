@@ -554,6 +554,22 @@ diff -urN -x *.bak a/win/tty/topl.c b/win/tty/topl.c
 diff -urN -x *.bak a/win/tty/wintty.c b/win/tty/wintty.c
 --- a/win/tty/wintty.c	2026-05-03 00:39:35
 +++ b/win/tty/wintty.c	2026-05-04 07:40:24
+@@ -713,6 +713,15 @@
+                     (void) putchar('\b');
+                     (void) putchar(' ');
+                     (void) putchar('\b');
+ #endif
++#ifdef NOMUX_CAPTURE
++#ifndef WIN32CON
++                    if (ttyDisplay->curx > 0) {
++                        ttyDisplay->curx--;
++                        nomux_putch(' ');
++                    }
++#endif
++#endif
+                 }
+                 continue;
+             }
 @@ -737,6 +737,10 @@
  #else
                  (void) putchar(c);

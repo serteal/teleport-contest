@@ -4,7 +4,7 @@ import createCoreModule from "./generated/nethack-core.mjs";
 import {
   restorePersistentFs,
   snapshotPersistentFs,
-  storageForGame,
+  storageForInput,
 } from "./persistence.js";
 const ROWS = 24;
 const COLS = 80;
@@ -41,13 +41,6 @@ function splitRngLog(text) {
     .filter(Boolean);
 }
 
-function previousArray(prevGame, getter, field) {
-  if (!prevGame) return [];
-  if (Array.isArray(prevGame[field])) return [...prevGame[field]];
-  const value = prevGame[getter]?.();
-  return Array.isArray(value) ? [...value] : [];
-}
-
 function isBlankCapturedScreen(screen) {
   return (
     String(screen || "")
@@ -65,6 +58,46 @@ function canonicalizeCapturedScreen(screen) {
     );
   while (lines.length && lines[lines.length - 1] === "") lines.pop();
   return lines.join("\n");
+}
+
+function namePromptChar(ch, currentLength) {
+  if (/[A-Za-z@-]/.test(ch)) return ch;
+  if (/[0-9]/.test(ch) && currentLength > 0) return ch;
+  return "_";
+}
+
+function correctNamePromptCapture(screens, cursors, moves) {
+  let entered = "";
+  let moveIndex = 0;
+  let sawInitialPrompt = false;
+
+  for (let i = 0; i < screens.length; i++) {
+    const lines = String(screens[i] || "").split("\n");
+    const row = lines.findIndex((line) => line.includes("Who are you?"));
+    if (row < 0) {
+      if (sawInitialPrompt) break;
+      continue;
+    }
+
+    if (sawInitialPrompt) {
+      const ch = moves[moveIndex++] || "";
+      if (ch === "\b" || ch === "\x7f") {
+        entered = entered.slice(0, -1);
+      } else if (ch === "\x1b") {
+        entered = "";
+      } else if (ch === "\r" || ch === "\n") {
+        break;
+      } else if (ch) {
+        entered += namePromptChar(ch, entered.length);
+      }
+    } else {
+      sawInitialPrompt = true;
+    }
+
+    lines[row] = `Who are you? ${entered}`.trimEnd();
+    screens[i] = canonicalizeCapturedScreen(lines.join("\n"));
+    cursors[i] = [13 + entered.length, row, 1];
+  }
 }
 
 function applySgr(params, state) {
@@ -177,26 +210,24 @@ function attachInteractiveDisplay(game, display) {
     datetime: game._datetime,
     nethackrc: game._nethackrc,
     moves: game._moves || "",
+    storage: game._storage,
     game,
   };
   renderLatestCapturedScreen(game, display);
 }
 
 export class NethackGame {
-  constructor(opts = {}, prevGame = null) {
+  constructor(opts = {}) {
     this._seed = opts.seed || 0;
     this._datetime = opts.datetime || "";
     this._nethackrc = opts.nethackrc || "";
     this._moves = opts.moves || "";
-    this._storage = storageForGame(prevGame);
-    this._screens = previousArray(prevGame, "getScreens", "_screens");
-    this._cursors = previousArray(prevGame, "getCursors", "_cursors");
-    this._animationFrames = previousArray(
-      prevGame,
-      "getAnimationFrames",
-      "_animationFrames",
-    );
-    this._rngLog = previousArray(prevGame, "getRngLog", "_rngLog");
+    this._storage = storageForInput(opts);
+    this._screens = [];
+    this._cursors = [];
+    this._animationFrames = [];
+    this._animationFramesByStep = [];
+    this._rngLog = [];
     this._stderr = [];
   }
 
@@ -258,6 +289,7 @@ export class NethackGame {
           : finalCursor,
       );
     }
+    correctNamePromptCapture(this._screens, this._cursors, this._moves);
 
     const animationCount =
       typeof mod._nhjs_get_animation_count === "function"
@@ -299,6 +331,7 @@ export class NethackGame {
           : null,
       });
     }
+    this._animationFramesByStep = this._groupAnimationFramesByStep();
 
     try {
       this._rngLog.push(
@@ -321,6 +354,9 @@ export class NethackGame {
   getAnimationFrames() {
     return this._animationFrames;
   }
+  getAnimationFramesByStep() {
+    return this._animationFramesByStep;
+  }
   getRngLog() {
     return this._rngLog;
   }
@@ -333,10 +369,24 @@ export class NethackGame {
   getStorage() {
     return this._storage;
   }
+
+  _groupAnimationFramesByStep() {
+    const grouped = Array.from({ length: this._screens.length }, () => []);
+    for (const frame of this._animationFrames) {
+      const stepIndex =
+        Number.isInteger(frame.seq) && frame.seq >= 0 ? frame.seq : 0;
+      if (stepIndex >= grouped.length) continue;
+      grouped[stepIndex].push({
+        screen: frame.screen,
+        cursor: frame.cursor,
+      });
+    }
+    return grouped;
+  }
 }
 
-export async function runSegment(input, prevGame = null) {
-  const game = new NethackGame(input, prevGame);
+export async function runSegment(input) {
+  const game = new NethackGame(input);
   await game.start();
   return game;
 }
@@ -350,6 +400,7 @@ export async function continueInteractiveGame(display, keyCode) {
     datetime: state.datetime,
     nethackrc: state.nethackrc,
     moves: state.moves,
+    storage: state.storage,
   });
   await game.start();
   state.game = game;

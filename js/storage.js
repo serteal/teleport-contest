@@ -3,8 +3,15 @@ import { game } from './gstate.js';
 //
 // Each VFS file is stored as a separate localStorage key with a 'vfs:' prefix.
 // Example: localStorage['vfs:/home/rodney/notes'] = 'Remember to buy scrolls'
+//
+// The /play/<owner>/index.html scaffold sets window.__TELEPORT_VFS_PREFIX to
+// 'vfs:<owner>:' before any module loads, so save files / record / bones /
+// per-segment state for fork A do not collide with fork B in the same browser.
+// Node sandbox runs leave the prefix at 'vfs:' (no window) so parity scoring
+// is unaffected.
 
-const VFS_PREFIX = 'vfs:';
+const VFS_PREFIX =
+    (typeof window !== 'undefined' && window.__TELEPORT_VFS_PREFIX) || 'vfs:';
 
 // Safe localStorage access -- returns null when unavailable (e.g. Node.js tests).
 
