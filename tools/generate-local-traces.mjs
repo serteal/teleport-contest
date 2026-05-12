@@ -63,7 +63,7 @@ against them with the existing analyzer.
 
 Options:
   --out DIR              Output directory (default .cache/local-traces)
-  --tier NAME            smoke | default | stress | edge | deep (default default)
+  --tier NAME            smoke | default | stress | edge | deep | state (default default)
   --count N              Number of fuzz specs (tier default when omitted)
   --public-remix N       Number of public keyplan remixes (tier default when omitted)
   --public-mutation N    Number of public keyplan mutation specs (tier default when omitted)
@@ -143,9 +143,11 @@ function parseArgs(argv) {
     else throw new Error(`Unknown option: ${arg}`);
   }
 
-  if (!["smoke", "default", "stress", "edge", "deep"].includes(opts.tier)) {
+  if (
+    !["smoke", "default", "stress", "edge", "deep", "state"].includes(opts.tier)
+  ) {
     throw new Error(
-      `Unknown tier ${opts.tier}; expected smoke, default, stress, edge, or deep`,
+      `Unknown tier ${opts.tier}; expected smoke, default, stress, edge, deep, or state`,
     );
   }
   if (opts.count != null && (!Number.isInteger(opts.count) || opts.count < 0)) {
@@ -1476,6 +1478,782 @@ function focusedSpecs() {
   return out;
 }
 
+function stateSpecs() {
+  const out = [];
+  const wizard = (name, options = [], lines = []) =>
+    rc({
+      name,
+      role: "Wizard",
+      race: "human",
+      gender: "female",
+      align: "neutral",
+      playmode: "debug",
+      options,
+      lines,
+    });
+  const normalRogue = (name, options = []) =>
+    rc({
+      name,
+      role: "Rogue",
+      race: "human",
+      gender: "female",
+      align: "chaotic",
+      pettype: "cat",
+      options,
+    });
+  const normalTourist = (name, options = []) =>
+    rc({
+      name,
+      role: "Tourist",
+      race: "human",
+      gender: "female",
+      align: "neutral",
+      pettype: "none",
+      options,
+    });
+  const normalStart = "  n";
+  const promptSamuraiRc = (options = []) =>
+    [
+      "OPTIONS=role:Samurai,race:human,gender:male,align:lawful",
+      "OPTIONS=!autopickup,!legacy,!tutorial,!splash_screen,pettype:none",
+      "OPTIONS=pushweapon,showexp,time,color,suppress_alert:3.4.3",
+      "OPTIONS=symset:DECgraphics",
+      options.length ? `OPTIONS=${options.join(",")}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  const wizardDeath = `${normalStart}\u0017wand of death\nzs.  yy yyyy `;
+  const wizardCleanQuit = `${normalStart}#quit\ryq`;
+
+  out.push(
+    spec("state-normal-save-restore-fresh-same-name", {
+      description:
+        "normal save restore deletes the save file, then same name starts fresh in a later segment",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "save-restore",
+        "save-delete",
+        "fresh-restart",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93000,
+          datetime: "20001013090000",
+          nethackrc: normalRogue("StateSave", ["disclose:-i -a -v -g -c -o"]),
+          moves: `${normalStart}LLLhhhjjj,,,i\u001bSy`,
+        },
+        {
+          seed: 93001,
+          datetime: "20001013090000",
+          nethackrc: normalRogue("StateSave", ["disclose:-i -a -v -g -c -o"]),
+          moves: "i\u001b#quit\ry",
+        },
+        {
+          seed: 93002,
+          datetime: "20001013090000",
+          nethackrc: normalRogue("StateSave", ["disclose:-i -a -v -g -c -o"]),
+          moves: `${normalStart}i\u001bss:`,
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-wizard-restore-keep-save-active-lock", {
+      description:
+        "wizard-mode restore keeps a save file and exposes the active-lock prompt on the next restore",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "save-restore",
+        "wizard",
+        "keep-save",
+        "active-lock",
+        "save-delete",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93010,
+          datetime: "20001111120000",
+          nethackrc: wizard("KeepSave", [
+            "!toptenwin",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}\u0017blessed +3 speed boots\nLLLhhhjjj,,,Sy`,
+        },
+        {
+          seed: 93011,
+          datetime: "20001111120000",
+          nethackrc: wizard("KeepSave", [
+            "!toptenwin",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "   y#quit\ry",
+        },
+        {
+          seed: 93012,
+          datetime: "20001111120000",
+          nethackrc: wizard("KeepSave", [
+            "!toptenwin",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "   n#quit\ry",
+        },
+        {
+          seed: 93013,
+          datetime: "20001111120000",
+          nethackrc: wizard("KeepSave", [
+            "!toptenwin",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}i\u001bss:`,
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-wizard-restore-keep-save-clean-quit", {
+      description:
+        "wizard-mode restore keeps a save file, then fully answers the debug quit prompts before a same-name restart",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "save-restore",
+        "wizard",
+        "keep-save",
+        "clean-quit",
+        "save-delete",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93014,
+          datetime: "20001111120000",
+          nethackrc: wizard("KeepClean", [
+            "!toptenwin",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}\u0017blessed +3 speed boots\nLLLhhhjjj,,,Sy`,
+        },
+        {
+          seed: 93015,
+          datetime: "20001111120000",
+          nethackrc: wizard("KeepClean", [
+            "!toptenwin",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "   y#quit\ryq",
+        },
+        {
+          seed: 93016,
+          datetime: "20001111120000",
+          nethackrc: wizard("KeepClean", [
+            "!toptenwin",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}i\u001bss:`,
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-save-name-from-prompt-restore", {
+      description:
+        "save file name comes from the startup name prompt, not nethackrc name",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "save-restore",
+        "name-prompt",
+        "line-edit",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93020,
+          datetime: "20260506120000",
+          nethackrc: [
+            "OPTIONS=role:Samurai,race:human,gender:male,align:lawful",
+            "OPTIONS=!autopickup,!legacy,!tutorial,!splash_screen,pettype:none",
+            "OPTIONS=pushweapon,showexp,time,color,suppress_alert:3.4.3",
+            "OPTIONS=symset:DECgraphics",
+            "OPTIONS=disclose:-i -a -v -g -c -o",
+          ].join("\n"),
+          moves: "PromptSave\r LLlkLLHjjjLLLL......HHHHHkkkkkkSy",
+        },
+        {
+          seed: 93021,
+          datetime: "20260506120000",
+          nethackrc: [
+            "OPTIONS=role:Samurai,race:human,gender:male,align:lawful",
+            "OPTIONS=!autopickup,!legacy,!tutorial,!splash_screen,pettype:none",
+            "OPTIONS=pushweapon,showexp,time,color,suppress_alert:3.4.3",
+            "OPTIONS=symset:DECgraphics",
+            "OPTIONS=disclose:-i -a -v -g -c -o",
+          ].join("\n"),
+          moves: "PromptSave\r i\u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-different-name-does-not-restore", {
+      description:
+        "a save file for one player name does not make a different player restore",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "save-restore",
+        "name-isolation",
+        "fresh-restart",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93030,
+          datetime: "20010401073000",
+          nethackrc: normalRogue("NameA", ["disclose:-i -a -v -g -c -o"]),
+          moves: `${normalStart}LLLhhhjjj,,,i\u001bSy`,
+        },
+        {
+          seed: 93031,
+          datetime: "20010401073000",
+          nethackrc: normalRogue("NameB", ["disclose:-i -a -v -g -c -o"]),
+          moves: `${normalStart}i\u001b#quit\ry`,
+        },
+        {
+          seed: 93032,
+          datetime: "20010401073000",
+          nethackrc: normalRogue("NameA", ["disclose:-i -a -v -g -c -o"]),
+          moves: "i\u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-record-file-two-quits", {
+      description:
+        "two consecutive quits append to record/xlog/logfile state before a third game reads it",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "record-file",
+        "logfile",
+        "xlogfile",
+        "quit",
+        "topten",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93040,
+          datetime: "20001013090000",
+          nethackrc: normalTourist("RecordA", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}#quit\ry`,
+        },
+        {
+          seed: 93041,
+          datetime: "20001111120000",
+          nethackrc: normalTourist("RecordB", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}#quit\ry`,
+        },
+        {
+          seed: 93042,
+          datetime: "20001111120000",
+          nethackrc: normalTourist("RecordC", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}#quit\ry`,
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-level-file-teleport-save-restore", {
+      description:
+        "save and restore from a wizard-level-teleported dungeon exercises persisted level files",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "level-file",
+        "level-teleport",
+        "save-restore",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93050,
+          datetime: "20020222151500",
+          nethackrc: wizard("LevelFile", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}\u00165\n \u0017blessed +3 speed boots\ni\u001bSy`,
+        },
+        {
+          seed: 93051,
+          datetime: "20020222151500",
+          nethackrc: wizard("LevelFile", [
+            "lit_corridor",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "   n#overview\n \u001bi\u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-record-and-save-interleaved", {
+      description:
+        "record/log state survives across save/restore, quit, and a later same-name restart",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "save-restore",
+        "record-file",
+        "quit",
+        "topten",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93060,
+          datetime: "20040929010101",
+          nethackrc: normalRogue("Interleave", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}LLLhhhjjj,,,i\u001bSy`,
+        },
+        {
+          seed: 93061,
+          datetime: "20040929010101",
+          nethackrc: normalRogue("Interleave", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "i\u001b#quit\ry",
+        },
+        {
+          seed: 93062,
+          datetime: "20040929010101",
+          nethackrc: normalRogue("Interleave", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}i\u001b#quit\ry`,
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-long-regularized-save-name", {
+      description:
+        "long mixed-case save names exercise filename regularization and restore lookup",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "save-restore",
+        "filename",
+        "regularize",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93070,
+          datetime: "20260506120000",
+          nethackrc: normalTourist("LongSaveNameForFileState", [
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}i\u001bSy`,
+        },
+        {
+          seed: 93071,
+          datetime: "20260506120000",
+          nethackrc: normalTourist("LongSaveNameForFileState", [
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "i\u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-regularized-punctuation-rc-name", {
+      description:
+        "save and restore with rc player names that contain characters regularized in filenames",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "save-restore",
+        "filename",
+        "regularize",
+        "punctuation",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93080,
+          datetime: "20260506120000",
+          nethackrc: normalTourist("Dot.Name/Space Test", [
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}i\u001bSy`,
+        },
+        {
+          seed: 93081,
+          datetime: "20260506120000",
+          nethackrc: normalTourist("Dot.Name/Space Test", [
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "i\u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-prompt-edited-name-save-restore", {
+      description:
+        "save file lookup follows the final edited startup prompt name across segments",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "save-restore",
+        "name-prompt",
+        "line-edit",
+        "escape",
+        "backspace",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93090,
+          datetime: "20260506120000",
+          nethackrc: promptSamuraiRc(["disclose:-i -a -v -g -c -o"]),
+          moves: "Temp\u001bAkirq\ba\r LLlkLLHjjjLLLL......HHHHHkkkkkkSy",
+        },
+        {
+          seed: 93091,
+          datetime: "20260506120000",
+          nethackrc: promptSamuraiRc(["disclose:-i -a -v -g -c -o"]),
+          moves: "Akira\r i\u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-restore-with-changed-display-rc", {
+      description:
+        "saved game restore uses the new segment rc for display and option state",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "save-restore",
+        "rc-change",
+        "display",
+        "symset",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93100,
+          datetime: "20040929010101",
+          nethackrc: rc({
+            name: "RcSwap",
+            role: "Rogue",
+            race: "human",
+            gender: "female",
+            align: "chaotic",
+            pettype: "cat",
+            symset: "DECgraphics",
+            options: [
+              "msg_window:reversed",
+              "lit_corridor",
+              "disclose:-i -a -v -g -c -o",
+            ],
+          }),
+          moves: `${normalStart}LLLhhhjjj,,,i\u001bSy`,
+        },
+        {
+          seed: 93101,
+          datetime: "20040929010101",
+          nethackrc: rc({
+            name: "RcSwap",
+            role: "Rogue",
+            race: "human",
+            gender: "female",
+            align: "chaotic",
+            pettype: "cat",
+            symset: "IBMgraphics",
+            options: [
+              "msg_window:reversed",
+              "msghistory:60",
+              "disclose:-i -a -v -g -c -o",
+            ],
+          }),
+          moves: "i\u001b+\u001b\\\u001b\u0018 \u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-record-file-two-wizard-deaths", {
+      description:
+        "multiple wizard deaths append score files and influence later topten output",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "record-file",
+        "logfile",
+        "xlogfile",
+        "death",
+        "topten",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93110,
+          datetime: "20001013090000",
+          nethackrc: wizard("DeadA", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: wizardDeath,
+        },
+        {
+          seed: 93111,
+          datetime: "20001111120000",
+          nethackrc: wizard("DeadB", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: wizardDeath,
+        },
+        {
+          seed: 93112,
+          datetime: "20020222151500",
+          nethackrc: wizard("DeadC", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}#quit\ry`,
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-wizard-clean-quit-two-games", {
+      description:
+        "two consecutive wizard-mode games fully answer debug quit prompts and should not leave stale locks",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "wizard",
+        "clean-quit",
+        "active-lock",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93115,
+          datetime: "20001013090000",
+          nethackrc: wizard("CleanQuitA", [
+            "!toptenwin",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: wizardCleanQuit,
+        },
+        {
+          seed: 93116,
+          datetime: "20001111120000",
+          nethackrc: wizard("CleanQuitB", [
+            "!toptenwin",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: wizardCleanQuit,
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-topten-window-record-growth", {
+      description:
+        "score-file growth changes a later end-game topten window with toptenwin enabled",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "record-file",
+        "death",
+        "topten",
+        "toptenwin",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93120,
+          datetime: "20001013090000",
+          nethackrc: wizard("TopA", [
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: wizardDeath,
+        },
+        {
+          seed: 93121,
+          datetime: "20001111120000",
+          nethackrc: wizard("TopB", [
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: wizardDeath,
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-active-lock-midgame-same-name-cancel", {
+      description:
+        "unfinished live game leaves an active lock; next same-name segment cancels the old-game prompt",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "active-lock",
+        "unfinished",
+        "cancel",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93130,
+          datetime: "20001013090000",
+          nethackrc: normalRogue("LiveLock", ["disclose:-i -a -v -g -c -o"]),
+          moves: `${normalStart}i\u001b`,
+        },
+        {
+          seed: 93131,
+          datetime: "20001013090000",
+          nethackrc: normalRogue("LiveLock", ["disclose:-i -a -v -g -c -o"]),
+          moves: "n",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-active-lock-midgame-destroy", {
+      description:
+        "unfinished live game leaves an active lock; next same-name segment destroys it and starts fresh",
+      source: "state-curated",
+      tags: [
+        "state",
+        "storage",
+        "active-lock",
+        "unfinished",
+        "destroy",
+        "fresh-restart",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 93140,
+          datetime: "20001013090000",
+          nethackrc: normalRogue("LiveDestroy", ["disclose:-i -a -v -g -c -o"]),
+          moves: `${normalStart}i\u001b`,
+        },
+        {
+          seed: 93141,
+          datetime: "20001013090000",
+          nethackrc: normalRogue("LiveDestroy", ["disclose:-i -a -v -g -c -o"]),
+          moves: `y${normalStart}i\u001b#quit\ry`,
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("state-wizard-bones-save-and-load", {
+      description:
+        "wizard death can save a bones file, and a later wizard game can load and unlink it",
+      source: "state-curated",
+      tags: ["state", "storage", "bones", "death", "wizard", "multisegment"],
+      segments: [
+        {
+          seed: 93150,
+          datetime: "20001013090000",
+          nethackrc: wizard("BoneMaker", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: wizardDeath,
+        },
+        {
+          seed: 93151,
+          datetime: "20001013090000",
+          nethackrc: wizard("BoneLoader", [
+            "!toptenwin",
+            "bones",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: `${normalStart}y#quit\ry`,
+        },
+      ],
+    }),
+  );
+
+  return out;
+}
+
 function deepCuratedSpecs() {
   const out = [];
   const wizard = (name, options = [], lines = []) =>
@@ -2019,6 +2797,13 @@ function tierDefaults(tier) {
       publicRemix: 40,
       publicMutation: 0,
     };
+  if (tier === "state")
+    return {
+      curatedLimit: 0,
+      count: 0,
+      publicRemix: 0,
+      publicMutation: 0,
+    };
   return {
     curatedLimit: Infinity,
     count: 72,
@@ -2034,6 +2819,10 @@ function allSpecs(opts) {
     opts.tier === "edge" || opts.tier === "stress" ? edgeSpecs() : [];
   const focused =
     opts.tier === "edge" || opts.tier === "stress" ? focusedSpecs() : [];
+  const state =
+    opts.tier === "state" || opts.tier === "edge" || opts.tier === "stress"
+      ? stateSpecs()
+      : [];
   const deep = opts.tier === "deep" ? deepCuratedSpecs() : [];
   const publicCount = opts.publicRemix ?? defaults.publicRemix;
   const mutationCount = opts.publicMutation ?? defaults.publicMutation;
@@ -2042,6 +2831,7 @@ function allSpecs(opts) {
     ...curated,
     ...edge,
     ...focused,
+    ...state,
     ...deep,
     ...(opts.tier === "deep" ? deepPublicSpecs(publicCount) : []),
     ...(opts.tier === "deep" ? [] : remixPublicSpecs(publicCount)),

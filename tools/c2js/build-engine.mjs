@@ -10,11 +10,16 @@ import {
   preparedSourceDir,
   projectRoot,
   upstreamDir,
-} from './c2js.config.mjs';
-import { compileCore, compileLua, compilePortObjects, compileSmoke } from './compile.mjs';
-import { configureSource, prepareSource } from './prepare.mjs';
-import { linkEngine, updateGenerated } from './link.mjs';
-import { runProbe } from './verify.mjs';
+} from "./c2js.config.mjs";
+import {
+  compileCore,
+  compileLua,
+  compilePortObjects,
+  compileSmoke,
+} from "./compile.mjs";
+import { configureSource, prepareSource } from "./prepare.mjs";
+import { linkEngine, updateGenerated } from "./link.mjs";
+import { runProbe } from "./verify.mjs";
 
 function usage() {
   console.log(`Usage:
@@ -57,16 +62,16 @@ function printConfig() {
 
 const args = new Set(process.argv.slice(2));
 try {
-  if (args.has('--probe')) runProbe();
-  else if (args.has('--prepare-source')) prepareSource();
-  else if (args.has('--configure')) configureSource();
-  else if (args.has('--compile-smoke')) compileSmoke();
-  else if (args.has('--compile-core')) compileCore();
-  else if (args.has('--compile-lua')) compileLua();
-  else if (args.has('--compile-port')) compilePortObjects();
-  else if (args.has('--link-engine')) linkEngine();
-  else if (args.has('--update-generated')) updateGenerated();
-  else if (args.has('--print-config')) printConfig();
+  if (args.has("--probe")) runProbe();
+  else if (args.has("--prepare-source")) prepareSource();
+  else if (args.has("--configure")) configureSource();
+  else if (args.has("--compile-smoke")) compileSmoke();
+  else if (args.has("--compile-core")) compileCore();
+  else if (args.has("--compile-lua")) compileLua();
+  else if (args.has("--compile-port")) compilePortObjects();
+  else if (args.has("--link-engine")) linkEngine();
+  else if (args.has("--update-generated")) updateGenerated();
+  else if (args.has("--print-config")) printConfig();
   else usage();
 } catch (error) {
   console.error(`c2js: ${error.message}`);

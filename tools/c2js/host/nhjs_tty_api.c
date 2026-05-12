@@ -58,6 +58,16 @@ static int nhjs_expected_screen_count;
 static int nhjs_cursor_col;
 static int nhjs_cursor_row;
 
+static void
+nhjs_stop_session(void)
+{
+    if (u.uhp <= 0)
+        clearlocks();
+    nhjs_input_exhausted_flag = TRUE;
+    if (nhjs_jump_active)
+        longjmp(nhjs_input_jmp, 1);
+}
+
 static char *
 nhjs_strdup_or_empty(const char *s)
 {
@@ -211,9 +221,25 @@ nhjs_wd_message(void)
     }
 }
 
+static void
+nhjs_apply_locknum_options(void)
+{
+#ifdef MAX_NR_OF_PLAYERS
+    if (!gl.locknum || gl.locknum > MAX_NR_OF_PLAYERS)
+        gl.locknum = MAX_NR_OF_PLAYERS;
+#endif
+#ifdef SYSCF
+    if (!gl.locknum || (sysopt.maxplayers && gl.locknum > sysopt.maxplayers))
+        gl.locknum = sysopt.maxplayers;
+#endif
+}
+
 void
 getlock(void)
 {
+    static const char destroy_old_game_prompt[] =
+        "There is already a game in progress under your name.  Destroy old game?";
+    int i = 0, c;
     const char *fq_lock;
     FILE *fp;
 
@@ -221,7 +247,45 @@ getlock(void)
         Sprintf(gl.lock, "%u%s", (unsigned) getuid(), svp.plname);
     regularize(gl.lock);
     set_levelfile_name(gl.lock, 0);
+
+    if (gl.locknum) {
+        if (gl.locknum > 25)
+            gl.locknum = 25;
+
+        do {
+            gl.lock[0] = 'a' + i++;
+            fq_lock = fqname(gl.lock, LEVELPREFIX, 0);
+            fp = fopen(fq_lock, "rb");
+            if (!fp)
+                goto gotlock;
+            fclose(fp);
+        } while (i < gl.locknum);
+
+        nhjs_stop_session();
+        return;
+    }
+
     fq_lock = fqname(gl.lock, LEVELPREFIX, 0);
+    fp = fopen(fq_lock, "rb");
+    if (fp) {
+        fclose(fp);
+        c = iflags.window_inited ? y_n(destroy_old_game_prompt) : 'n';
+        if (c == 'y' || c == 'Y') {
+            for (i = 1; i <= MAXDUNGEON * MAXLEVEL + 1; i++) {
+                set_levelfile_name(gl.lock, i);
+                (void) unlink(fqname(gl.lock, LEVELPREFIX, 0));
+            }
+            set_levelfile_name(gl.lock, 0);
+            fq_lock = fqname(gl.lock, LEVELPREFIX, 0);
+            if (unlink(fq_lock))
+                error("Couldn't destroy old game.");
+        } else {
+            nhjs_stop_session();
+            return;
+        }
+    }
+
+ gotlock:
     fp = fopen(fq_lock, "wb");
     if (!fp)
         error("cannot create lock file (%s).", fq_lock);
@@ -237,9 +301,7 @@ nhjs_next_input(void)
     unsigned char ch;
 
     if (!nhjs_moves_next || !*nhjs_moves_next) {
-        nhjs_input_exhausted_flag = TRUE;
-        if (nhjs_jump_active)
-            longjmp(nhjs_input_jmp, 1);
+        nhjs_stop_session();
         return '\033';
     }
     ch = (unsigned char) *nhjs_moves_next++;
@@ -417,6 +479,7 @@ nhjs_start_game(void)
     choose_windows("tty");
     nhjs_phase = 5;
     initoptions();
+    nhjs_apply_locknum_options();
     nhjs_phase = 6;
     (void) whoami();
     u.uhp = 1;

@@ -1,26 +1,39 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
-import { cacheRoot, jsOnlyProbeFlags, projectRoot } from './c2js.config.mjs';
-import { ensureToolchain, forbiddenRuntimeHooks, run } from './common.mjs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, join } from "node:path";
+import { cacheRoot, jsOnlyProbeFlags, projectRoot } from "./c2js.config.mjs";
+import { ensureToolchain, forbiddenRuntimeHooks, run } from "./common.mjs";
 
 export function validateLinkedEngine(modulePath) {
-  const linkDir = join(cacheRoot, 'link');
-  const wasmSidecars = readdirSync(linkDir).filter((entry) => entry.endsWith('.wasm'));
+  const linkDir = join(cacheRoot, "link");
+  const wasmSidecars = readdirSync(linkDir).filter((entry) =>
+    entry.endsWith(".wasm"),
+  );
   if (wasmSidecars.length) {
-    throw new Error(`link emitted forbidden wasm side file(s): ${wasmSidecars.join(', ')}`);
+    throw new Error(
+      `link emitted forbidden wasm side file(s): ${wasmSidecars.join(", ")}`,
+    );
   }
 
-  const generated = readFileSync(modulePath, 'utf8');
+  const generated = readFileSync(modulePath, "utf8");
   const forbidden = forbiddenRuntimeHooks(generated);
   if (forbidden.length) {
-    throw new Error(`engine output contains forbidden host hooks: ${forbidden.join(', ')}`);
+    throw new Error(
+      `engine output contains forbidden host hooks: ${forbidden.join(", ")}`,
+    );
   }
 
   const smoke = run(
     process.execPath,
     [
-      '--input-type=module',
-      '-e',
+      "--input-type=module",
+      "-e",
       `
 globalThis.fetch = () => { throw new Error('fetch called'); };
 globalThis.WebAssembly = new Proxy({}, { get() { throw new Error('real WebAssembly touched'); } });
@@ -31,20 +44,22 @@ console.log(mod.ccall('nh_c2js_link_smoke', 'number', [], []));
     ],
     { capture: true },
   ).trim();
-  if (smoke !== '5000') {
-    throw new Error(`engine smoke returned ${JSON.stringify(smoke)}, expected "5000"`);
+  if (smoke !== "5000") {
+    throw new Error(
+      `engine smoke returned ${JSON.stringify(smoke)}, expected "5000"`,
+    );
   }
 }
 
 export function runProbe() {
   ensureToolchain();
-  const probeDir = join(cacheRoot, 'probe');
+  const probeDir = join(cacheRoot, "probe");
   rmSync(probeDir, { recursive: true, force: true });
   mkdirSync(probeDir, { recursive: true });
 
-  const source = join(probeDir, 'probe.c');
-  const native = join(probeDir, 'probe-native');
-  const module = join(probeDir, 'probe-engine.mjs');
+  const source = join(probeDir, "probe.c");
+  const native = join(probeDir, "probe-native");
+  const module = join(probeDir, "probe-engine.mjs");
   writeFileSync(
     source,
     String.raw`
@@ -88,15 +103,15 @@ int main(void) {
 `,
   );
 
-  run('clang', [source, '-O2', '-o', native]);
+  run("clang", [source, "-O2", "-o", native]);
   const nativeOut = run(native, [], { capture: true }).trim();
 
-  run('emcc', [source, ...jsOnlyProbeFlags, '-o', module]);
+  run("emcc", [source, ...jsOnlyProbeFlags, "-o", module]);
   const jsOut = run(
     process.execPath,
     [
-      '--input-type=module',
-      '-e',
+      "--input-type=module",
+      "-e",
       `
 globalThis.fetch = () => { throw new Error('fetch called'); };
 globalThis.WebAssembly = new Proxy({}, { get() { throw new Error('real WebAssembly touched'); } });
@@ -109,13 +124,15 @@ console.log(lines.join('\\n'));
     { capture: true },
   ).trim();
 
-  const generated = readFileSync(module, 'utf8');
+  const generated = readFileSync(module, "utf8");
   const forbidden = forbiddenRuntimeHooks(generated);
   if (forbidden.length) {
-    throw new Error(`probe output contains forbidden host hooks: ${forbidden.join(', ')}`);
+    throw new Error(
+      `probe output contains forbidden host hooks: ${forbidden.join(", ")}`,
+    );
   }
   if (existsSync(join(probeDir, `${basename(module)}.wasm`))) {
-    throw new Error('probe emitted a wasm side file');
+    throw new Error("probe emitted a wasm side file");
   }
   if (nativeOut !== jsOut) {
     throw new Error(`probe mismatch\nnative: ${nativeOut}\njs:     ${jsOut}`);

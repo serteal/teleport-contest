@@ -135,21 +135,6 @@ diff --git a/src/date.c b/src/date.c
      /* "Feb 12 1996 23:59:01"
          01234567890123456789  */
      if ((int) strlen(tmpbuf1) == 20) {
-
-
-ALSO pin the recorder's BUILD_DATE to NetHack 5.0.0's release date.
-
-Without this, every build of the recorder bakes a different date+time
-into the title-screen banner ("Version 5.0.0 MacOS, built <whenever>
-12:00:00."), causing screen captures of the banner to fail to compare
-clean across rebuilds.
-
-Defining REPRODUCIBLE_BUILD (already documented in config.h above
-the disabled line) tells util/makedefs to read SOURCE_DATE_EPOCH
-from the build environment and use it as the build clock. The
-matching build script export pins it to 1777723200, which is
-"Sat May  2 12:00:00 2026 UTC" — NetHack 5.0.0's release moment.
-
 diff -urN -x *.bak a/include/config.h b/include/config.h
 --- a/include/config.h
 +++ b/include/config.h
