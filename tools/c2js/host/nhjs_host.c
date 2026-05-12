@@ -6,12 +6,48 @@
 #include <stdlib.h>
 
 static unsigned long nhjs_seed;
+static unsigned char nhjs_seed_bytes[8];
+
+static void
+nhjs_store_seed64(unsigned long long seed)
+{
+    int i;
+
+    nhjs_seed = (unsigned long) seed;
+    for (i = 0; i < 8; ++i) {
+        nhjs_seed_bytes[i] = (unsigned char) (seed & 0xFFu);
+        seed >>= 8;
+    }
+}
 
 EMSCRIPTEN_KEEPALIVE
 void
 nhjs_set_seed(unsigned long seed)
 {
-    nhjs_seed = seed;
+    nhjs_store_seed64((unsigned long long) seed);
+}
+
+void
+nhjs_set_seed_text(const char *seed_text)
+{
+    char *end = (char *) 0;
+    unsigned long long seed = 0ULL;
+
+    if (seed_text && *seed_text)
+        seed = strtoull(seed_text, &end, 10);
+    nhjs_store_seed64(seed);
+}
+
+int
+nhjs_get_seed_bytes(unsigned char *out, int max)
+{
+    int i, n = max < 8 ? max : 8;
+
+    if (!out || max <= 0)
+        return 0;
+    for (i = 0; i < n; ++i)
+        out[i] = nhjs_seed_bytes[i];
+    return 8;
 }
 
 EMSCRIPTEN_KEEPALIVE

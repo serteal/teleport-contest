@@ -242,8 +242,8 @@ export class NethackGame {
     mod.ccall(
       "nhjs_session_init",
       null,
-      ["number", "string", "string", "string"],
-      [this._seed, this._datetime, this._nethackrc, this._moves],
+      ["string", "string", "string", "string"],
+      [String(this._seed ?? 0), this._datetime, this._nethackrc, this._moves],
     );
 
     const maxIterations = Math.max(10000, this._moves.length * 64);

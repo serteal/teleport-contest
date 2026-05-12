@@ -204,6 +204,84 @@ extern void nomux_capture_write_input_boundary(void);
     writeFileSync(eatPath, eat);
   }
 
+  const rndPath = join(preparedSourceDir, "src/rnd.c");
+  let rnd = readFileSync(rndPath, "utf8");
+  if (!rnd.includes("c2js uses recorder-width seed bytes")) {
+    rnd = rnd.replace(
+      `void
+init_isaac64(unsigned long seed, int (*fn)(int))
+{
+    unsigned char new_rng_state[sizeof seed];
+    unsigned i;
+    int rngindx = whichrng(fn);
+
+    if (rngindx < 0)
+        panic("Bad rng function passed to init_isaac64().");
+
+    for (i = 0; i < sizeof seed; i++) {
+        new_rng_state[i] = (unsigned char) (seed & 0xFF);
+        seed >>= 8;
+    }
+    isaac64_init(&rnglist[rngindx].rng_state, new_rng_state,
+                 (int) sizeof seed);
+}`,
+      `#ifdef NH_C2JS_TTY_CAPTURE
+extern int nhjs_get_seed_bytes(unsigned char *, int);
+#endif
+
+void
+init_isaac64(unsigned long seed, int (*fn)(int))
+{
+#ifdef NH_C2JS_TTY_CAPTURE
+    unsigned char new_rng_state[8];
+    int seed_len;
+#else
+    unsigned char new_rng_state[sizeof seed];
+    unsigned i;
+#endif
+    int rngindx = whichrng(fn);
+
+    if (rngindx < 0)
+        panic("Bad rng function passed to init_isaac64().");
+
+#ifdef NH_C2JS_TTY_CAPTURE
+    /* c2js uses recorder-width seed bytes: native public traces are LP64
+       and feed ISAAC64 eight little-endian bytes from unsigned long. */
+    seed_len = nhjs_get_seed_bytes(new_rng_state,
+                                   (int) sizeof new_rng_state);
+    isaac64_init(&rnglist[rngindx].rng_state, new_rng_state, seed_len);
+#else
+    for (i = 0; i < sizeof seed; i++) {
+        new_rng_state[i] = (unsigned char) (seed & 0xFF);
+        seed >>= 8;
+    }
+    isaac64_init(&rnglist[rngindx].rng_state, new_rng_state,
+                 (int) sizeof seed);
+#endif
+}`,
+    );
+    writeFileSync(rndPath, rnd);
+  }
+
+  const nhluaPath = join(preparedSourceDir, "src/nhlua.c");
+  let nhlua = readFileSync(nhluaPath, "utf8");
+  if (!nhlua.includes("c2js preserves 64-bit Lua seed parity")) {
+    nhlua = nhlua.replace(
+      `                unsigned long seed = strtoul(env_seed, NULL, 10);
+                lua_getfield(L, -1, "randomseed");
+                lua_pushinteger(L, (lua_Integer) seed);`,
+      `#ifdef NH_C2JS_TTY_CAPTURE
+                unsigned long long seed = strtoull(env_seed, NULL, 10);
+                /* c2js preserves 64-bit Lua seed parity with the LP64 recorder. */
+#else
+                unsigned long seed = strtoul(env_seed, NULL, 10);
+#endif
+                lua_getfield(L, -1, "randomseed");
+                lua_pushinteger(L, (lua_Integer) seed);`,
+    );
+    writeFileSync(nhluaPath, nhlua);
+  }
+
   const calendarPath = join(preparedSourceDir, "src/calendar.c");
   let calendar = readFileSync(calendarPath, "utf8");
   if (!calendar.includes("c2js recorder fixed datetime timezone")) {

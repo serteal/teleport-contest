@@ -24,6 +24,7 @@
 extern void rng_log_init(void);
 extern void moveloop_preamble(boolean);
 extern void nhjs_set_seed(unsigned long seed);
+extern void nhjs_set_seed_text(const char *seed_text);
 extern void nhjs_install_data_files(void);
 extern boolean whoami(void);
 extern NHFILE *restore_saved_game(void);
@@ -37,13 +38,13 @@ static boolean nhjs_game_started;
 static boolean nhjs_input_exhausted_flag;
 static boolean nhjs_jump_active;
 static int nhjs_phase;
-static unsigned long nhjs_session_seed;
 static jmp_buf nhjs_input_jmp;
 
 static char *nhjs_moves;
 static char *nhjs_moves_next;
 static char *nhjs_datetime;
 static char *nhjs_rc;
+static char *nhjs_seed_text;
 static char *nhjs_screens[NHJS_MAX_SCREENS];
 static int nhjs_screen_cursor_cols[NHJS_MAX_SCREENS];
 static int nhjs_screen_cursor_rows[NHJS_MAX_SCREENS];
@@ -434,7 +435,6 @@ static void
 nhjs_start_game(void)
 {
     char *argv[2];
-    char seedbuf[32];
     int argc = 1;
     boolean plsel_once = FALSE, resuming = FALSE;
     NHFILE *nhfp = (NHFILE *) 0;
@@ -459,8 +459,8 @@ nhjs_start_game(void)
     setenv("NHJS_NOMUX_CAPTURE", "1", 1);
     setenv("NHJS_SUPPRESS_NOMUX_MARKERS", "1", 1);
     unsetenv("TERM");
-    Sprintf(seedbuf, "%lu", nhjs_session_seed);
-    setenv("NETHACK_SEED", seedbuf, 1);
+    setenv("NETHACK_SEED", (nhjs_seed_text && *nhjs_seed_text)
+                             ? nhjs_seed_text : "0", 1);
     if (nhjs_datetime && *nhjs_datetime)
         setenv("NETHACK_FIXED_DATETIME", nhjs_datetime, 1);
     else
@@ -568,26 +568,27 @@ attempt_restore:
 
 EMSCRIPTEN_KEEPALIVE
 void
-nhjs_session_init(unsigned long seed, const char *datetime,
+nhjs_session_init(const char *seed_text, const char *datetime,
                   const char *nethackrc, const char *moves)
 {
     free(nhjs_moves);
     free(nhjs_datetime);
     free(nhjs_rc);
+    free(nhjs_seed_text);
     nhjs_free_screens();
     nhjs_moves = nhjs_strdup_or_empty(moves);
     nhjs_datetime = nhjs_strdup_or_empty(datetime);
     nhjs_rc = nhjs_strdup_or_empty(nethackrc);
+    nhjs_seed_text = nhjs_strdup_or_empty(seed_text);
     nhjs_moves_next = nhjs_moves;
     nhjs_expected_screen_count = nhjs_moves ? (int) strlen(nhjs_moves) + 1 : 1;
     nhjs_game_started = FALSE;
     nhjs_input_exhausted_flag = FALSE;
     nhjs_jump_active = FALSE;
     nhjs_phase = 0;
-    nhjs_session_seed = seed;
     nhjs_cursor_col = 0;
     nhjs_cursor_row = 0;
-    nhjs_set_seed(seed);
+    nhjs_set_seed_text(nhjs_seed_text);
 }
 
 EMSCRIPTEN_KEEPALIVE
