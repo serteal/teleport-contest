@@ -11,7 +11,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define NHJS_MAX_SCREENS 8192
 #define NHJS_RNG_LOG_PATH "/rng.log"
 /*
  * Recorder ABI compatibility: the public traces were captured with this rc
@@ -40,21 +39,25 @@ static boolean nhjs_jump_active;
 static int nhjs_phase;
 static jmp_buf nhjs_input_jmp;
 
+struct nhjs_capture_frame {
+    char *screen;
+    int cursor_col;
+    int cursor_row;
+    int seq;
+    int anim;
+};
+
 static char *nhjs_moves;
 static char *nhjs_moves_next;
 static char *nhjs_datetime;
 static char *nhjs_rc;
 static char *nhjs_seed_text;
-static char *nhjs_screens[NHJS_MAX_SCREENS];
-static int nhjs_screen_cursor_cols[NHJS_MAX_SCREENS];
-static int nhjs_screen_cursor_rows[NHJS_MAX_SCREENS];
+static struct nhjs_capture_frame *nhjs_screens;
 static int nhjs_screen_count;
-static char *nhjs_animation_screens[NHJS_MAX_SCREENS];
-static int nhjs_animation_cursor_cols[NHJS_MAX_SCREENS];
-static int nhjs_animation_cursor_rows[NHJS_MAX_SCREENS];
-static int nhjs_animation_seqs[NHJS_MAX_SCREENS];
-static int nhjs_animation_ids[NHJS_MAX_SCREENS];
+static int nhjs_screen_capacity;
+static struct nhjs_capture_frame *nhjs_animation_frames;
 static int nhjs_animation_count;
+static int nhjs_animation_capacity;
 static int nhjs_expected_screen_count;
 static int nhjs_cursor_col;
 static int nhjs_cursor_row;
@@ -83,6 +86,38 @@ nhjs_strdup_or_empty(const char *s)
         return (char *) 0;
     memcpy(copy, s, len + 1);
     return copy;
+}
+
+static struct nhjs_capture_frame *
+nhjs_push_capture_frame(struct nhjs_capture_frame **frames, int *count,
+                        int *capacity, const char *screen)
+{
+    struct nhjs_capture_frame *new_frames;
+    struct nhjs_capture_frame *frame;
+    int new_capacity;
+
+    if (*count >= *capacity) {
+        new_capacity = *capacity ? *capacity * 2 : 1024;
+        if (new_capacity <= *capacity)
+            return (struct nhjs_capture_frame *) 0;
+        new_frames = (struct nhjs_capture_frame *) realloc(
+            *frames, (size_t) new_capacity * sizeof **frames);
+        if (!new_frames)
+            return (struct nhjs_capture_frame *) 0;
+        *frames = new_frames;
+        *capacity = new_capacity;
+    }
+
+    frame = &(*frames)[*count];
+    frame->screen = nhjs_strdup_or_empty(screen);
+    if (!frame->screen)
+        return (struct nhjs_capture_frame *) 0;
+    frame->cursor_col = 0;
+    frame->cursor_row = 0;
+    frame->seq = 0;
+    frame->anim = 0;
+    (*count)++;
+    return frame;
 }
 
 static boolean
@@ -116,15 +151,21 @@ nhjs_free_screens(void)
     int i;
 
     for (i = 0; i < nhjs_screen_count; ++i) {
-        free(nhjs_screens[i]);
-        nhjs_screens[i] = (char *) 0;
+        free(nhjs_screens[i].screen);
+        nhjs_screens[i].screen = (char *) 0;
     }
+    free(nhjs_screens);
+    nhjs_screens = (struct nhjs_capture_frame *) 0;
     nhjs_screen_count = 0;
+    nhjs_screen_capacity = 0;
     for (i = 0; i < nhjs_animation_count; ++i) {
-        free(nhjs_animation_screens[i]);
-        nhjs_animation_screens[i] = (char *) 0;
+        free(nhjs_animation_frames[i].screen);
+        nhjs_animation_frames[i].screen = (char *) 0;
     }
+    free(nhjs_animation_frames);
+    nhjs_animation_frames = (struct nhjs_capture_frame *) 0;
     nhjs_animation_count = 0;
+    nhjs_animation_capacity = 0;
 }
 
 static void
@@ -323,19 +364,19 @@ void
 nhjs_tty_capture_boundary(const char *kind, int seq, int anim, int cx, int cy,
                           const char *screen)
 {
+    struct nhjs_capture_frame *frame;
+
     if (!kind)
         return;
     if (!strcmp(kind, "anim")) {
-        if (nhjs_animation_count >= NHJS_MAX_SCREENS)
-            return;
-        nhjs_animation_screens[nhjs_animation_count] =
-            nhjs_strdup_or_empty(screen);
-        if (nhjs_animation_screens[nhjs_animation_count]) {
-            nhjs_animation_cursor_cols[nhjs_animation_count] = cx;
-            nhjs_animation_cursor_rows[nhjs_animation_count] = cy;
-            nhjs_animation_seqs[nhjs_animation_count] = seq;
-            nhjs_animation_ids[nhjs_animation_count] = anim;
-            nhjs_animation_count++;
+        frame = nhjs_push_capture_frame(&nhjs_animation_frames,
+                                        &nhjs_animation_count,
+                                        &nhjs_animation_capacity, screen);
+        if (frame) {
+            frame->cursor_col = cx;
+            frame->cursor_row = cy;
+            frame->seq = seq;
+            frame->anim = anim;
         }
         nhjs_cursor_col = cx;
         nhjs_cursor_row = cy;
@@ -349,13 +390,11 @@ nhjs_tty_capture_boundary(const char *kind, int seq, int anim, int cx, int cy,
         nhjs_cursor_row = cy;
         return;
     }
-    if (nhjs_screen_count >= NHJS_MAX_SCREENS)
-        return;
-    nhjs_screens[nhjs_screen_count] = nhjs_strdup_or_empty(screen);
-    if (nhjs_screens[nhjs_screen_count]) {
-        nhjs_screen_cursor_cols[nhjs_screen_count] = cx;
-        nhjs_screen_cursor_rows[nhjs_screen_count] = cy;
-        nhjs_screen_count++;
+    frame = nhjs_push_capture_frame(&nhjs_screens, &nhjs_screen_count,
+                                    &nhjs_screen_capacity, screen);
+    if (frame) {
+        frame->cursor_col = cx;
+        frame->cursor_row = cy;
     }
     nhjs_cursor_col = cx;
     nhjs_cursor_row = cy;
@@ -492,7 +531,7 @@ nhjs_start_game(void)
     if (wizard)
         gl.locknum = 0;
     gp.plnamelen = 0;
-    if (!nhjs_rc_has_name_option())
+    if (!nhjs_rc_has_name_option() && !wizard && !discover)
         svp.plname[0] = '\0';
     plnamesuffix();
     nhjs_phase = 9;
@@ -625,7 +664,7 @@ nhjs_get_screen(int idx)
 {
     if (idx < 0 || idx >= nhjs_screen_count)
         return "";
-    return nhjs_screens[idx] ? nhjs_screens[idx] : "";
+    return nhjs_screens[idx].screen ? nhjs_screens[idx].screen : "";
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -641,7 +680,9 @@ nhjs_get_animation_screen(int idx)
 {
     if (idx < 0 || idx >= nhjs_animation_count)
         return "";
-    return nhjs_animation_screens[idx] ? nhjs_animation_screens[idx] : "";
+    return nhjs_animation_frames[idx].screen
+               ? nhjs_animation_frames[idx].screen
+               : "";
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -650,7 +691,7 @@ nhjs_get_animation_cursor_col(int idx)
 {
     if (idx < 0 || idx >= nhjs_animation_count)
         return 0;
-    return nhjs_animation_cursor_cols[idx];
+    return nhjs_animation_frames[idx].cursor_col;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -659,7 +700,7 @@ nhjs_get_animation_cursor_row(int idx)
 {
     if (idx < 0 || idx >= nhjs_animation_count)
         return 0;
-    return nhjs_animation_cursor_rows[idx];
+    return nhjs_animation_frames[idx].cursor_row;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -668,7 +709,7 @@ nhjs_get_animation_seq(int idx)
 {
     if (idx < 0 || idx >= nhjs_animation_count)
         return 0;
-    return nhjs_animation_seqs[idx];
+    return nhjs_animation_frames[idx].seq;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -677,7 +718,7 @@ nhjs_get_animation_id(int idx)
 {
     if (idx < 0 || idx >= nhjs_animation_count)
         return 0;
-    return nhjs_animation_ids[idx];
+    return nhjs_animation_frames[idx].anim;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -686,7 +727,7 @@ nhjs_get_screen_cursor_col(int idx)
 {
     if (idx < 0 || idx >= nhjs_screen_count)
         return 0;
-    return nhjs_screen_cursor_cols[idx];
+    return nhjs_screens[idx].cursor_col;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -695,7 +736,7 @@ nhjs_get_screen_cursor_row(int idx)
 {
     if (idx < 0 || idx >= nhjs_screen_count)
         return 0;
-    return nhjs_screen_cursor_rows[idx];
+    return nhjs_screens[idx].cursor_row;
 }
 
 EMSCRIPTEN_KEEPALIVE

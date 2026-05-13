@@ -246,9 +246,28 @@ export class NethackGame {
       [String(this._seed ?? 0), this._datetime, this._nethackrc, this._moves],
     );
 
-    const maxIterations = Math.max(10000, this._moves.length * 64);
+    const chunkIterations = 10000;
+    const maxIterations = Math.max(1000000, this._moves.length * 1024);
     try {
-      mod.ccall("nhjs_session_run", "number", ["number"], [maxIterations]);
+      let iterations = 0;
+      for (;;) {
+        const status = mod.ccall(
+          "nhjs_session_run",
+          "number",
+          ["number"],
+          [chunkIterations],
+        );
+        iterations += chunkIterations;
+        const exhausted =
+          typeof mod._nhjs_input_exhausted === "function" &&
+          mod.ccall("nhjs_input_exhausted", "number", [], []) !== 0;
+        if (status === 0 || exhausted) break;
+        if (iterations >= maxIterations) {
+          throw new Error(
+            `NetHack replay did not finish after ${iterations} iterations`,
+          );
+        }
+      }
     } catch (error) {
       const message = String(error?.message || error || "");
       if (!message.includes("exit(0)")) throw error;

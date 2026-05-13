@@ -63,7 +63,7 @@ against them with the existing analyzer.
 
 Options:
   --out DIR              Output directory (default .cache/local-traces)
-  --tier NAME            smoke | default | stress | edge | deep | state (default default)
+  --tier NAME            smoke | default | stress | edge | deep | state | risk (default default)
   --count N              Number of fuzz specs (tier default when omitted)
   --public-remix N       Number of public keyplan remixes (tier default when omitted)
   --public-mutation N    Number of public keyplan mutation specs (tier default when omitted)
@@ -144,10 +144,12 @@ function parseArgs(argv) {
   }
 
   if (
-    !["smoke", "default", "stress", "edge", "deep", "state"].includes(opts.tier)
+    !["smoke", "default", "stress", "edge", "deep", "state", "risk"].includes(
+      opts.tier,
+    )
   ) {
     throw new Error(
-      `Unknown tier ${opts.tier}; expected smoke, default, stress, edge, deep, or state`,
+      `Unknown tier ${opts.tier}; expected smoke, default, stress, edge, deep, state, or risk`,
     );
   }
   if (opts.count != null && (!Number.isInteger(opts.count) || opts.count < 0)) {
@@ -2553,6 +2555,145 @@ function deepPublicSpecs(limit) {
   return out;
 }
 
+function riskSpecs() {
+  const out = [];
+  const publicByName = new Map(
+    readPublicSessions().map((entry) => [entry.name, entry]),
+  );
+  const overflowPublicNames = [
+    "seed0007-rogue-snake-swamp.session.json",
+    "seed0014-dequa-fountain-explore.session.json",
+    "seed0030-ten-diverse-deaths.session.json",
+    "seed0360-wizard-world-tour.session.json",
+    "seed4500-knight-coverage.session.json",
+  ];
+
+  for (const name of overflowPublicNames) {
+    const entry = publicByName.get(name);
+    const segment = entry?.session?.segments?.[0];
+    if (!segment) continue;
+    out.push(
+      spec(`risk-post-2038-${slugify(name.replace(/\.session\.json$/, ""))}`, {
+        description: `post-2038 datetime replay for ${name}`,
+        source: `risk-public-post-2038:${name}`,
+        tags: [
+          "risk",
+          "post-2038",
+          "calendar",
+          "public-keyplan",
+          "rng-divergence",
+        ],
+        seed: Number(segment.seed || 0),
+        datetime: "20380119031407",
+        nethackrc: segment.nethackrc || "",
+        moves: String(segment.moves || ""),
+      }),
+    );
+  }
+
+  out.push(
+    spec("risk-lp64-calendar-lua-specials", {
+      description:
+        "far future fixed datetime through wizard branch generation and Lua specials",
+      source: "risk-curated",
+      tags: ["risk", "post-2038", "calendar", "wizard", "lua"],
+      seed: 99001,
+      datetime: "20380119031407",
+      nethackrc: rc({
+        name: "RiskLua",
+        role: "Wizard",
+        race: "human",
+        gender: "female",
+        align: "neutral",
+        playmode: "debug",
+        options: ["lit_corridor"],
+      }),
+      moves:
+        "  n#levelchange\n2\n  \u0012#levelchange\n10\n  \u0012#levelchange\n20\n  \u0012i\u001bss:",
+    }),
+  );
+
+  out.push(
+    spec("risk-debug-no-name-startup", {
+      description:
+        "debug playmode without an explicit name should inherit NetHack's wizard default instead of prompting",
+      source: "risk-curated",
+      tags: ["risk", "debug", "whoami", "name-prompt"],
+      seed: 99002,
+      datetime: "20001013090000",
+      nethackrc:
+        [
+          "OPTIONS=role:Wizard,race:human,gender:female,align:neutral,playmode:debug",
+          "OPTIONS=!autopickup,!legacy,!tutorial,!splash_screen,pettype:none",
+          "OPTIONS=pushweapon,showexp,time,color,suppress_alert:3.4.3",
+          "OPTIONS=symset:DECgraphics",
+        ].join("\n") + "\n",
+      moves: "  n\u0017wand of fire\nz.\u001bss:",
+    }),
+  );
+
+  out.push(
+    spec("risk-buffer-cap-8300-waits", {
+      description:
+        "long replay with more than the historical 8192 captured input screens",
+      source: "risk-curated",
+      tags: ["risk", "long-replay", "capture-buffer", "screen-count"],
+      seed: 99003,
+      datetime: "20010401073000",
+      nethackrc: rc({
+        name: "RiskWait",
+        role: "Tourist",
+        race: "human",
+        gender: "female",
+        align: "neutral",
+        pettype: "none",
+      }),
+      moves: `  n${".".repeat(8300)}`,
+    }),
+  );
+
+  out.push(
+    spec("risk-storage-save-restore-record-chain", {
+      description:
+        "multi-segment save, restore, death disclosure, and record-file persistence",
+      source: "risk-curated",
+      tags: ["risk", "state", "storage", "save-restore", "record-file"],
+      segments: [
+        {
+          seed: 99004,
+          datetime: "20380119031407",
+          nethackrc: rc({
+            name: "RiskStore",
+            role: "Wizard",
+            race: "human",
+            gender: "female",
+            align: "neutral",
+            playmode: "debug",
+            options: ["!toptenwin", "disclose:yi ya yv yg yc yo"],
+          }),
+          moves: "  n\u0017blessed +3 speed boots\nWass:",
+        },
+        {
+          seed: 99005,
+          datetime: "20380119031407",
+          nethackrc: rc({
+            name: "RiskStore",
+            role: "Wizard",
+            race: "human",
+            gender: "female",
+            align: "neutral",
+            playmode: "debug",
+            options: ["!toptenwin", "disclose:yi ya yv yg yc yo"],
+          }),
+          moves: "i\u001b\u0017wand of death\nzs.  yy yyyy ",
+        },
+      ],
+    }),
+  );
+
+  return out;
+}
+
 function readPublicSessions() {
   if (!existsSync(sessionsDir)) return [];
   return readdirSync(sessionsDir)
@@ -2804,6 +2945,13 @@ function tierDefaults(tier) {
       publicRemix: 0,
       publicMutation: 0,
     };
+  if (tier === "risk")
+    return {
+      curatedLimit: 0,
+      count: 0,
+      publicRemix: 0,
+      publicMutation: 0,
+    };
   return {
     curatedLimit: Infinity,
     count: 72,
@@ -2823,6 +2971,10 @@ function allSpecs(opts) {
     opts.tier === "state" || opts.tier === "edge" || opts.tier === "stress"
       ? stateSpecs()
       : [];
+  const risk =
+    opts.tier === "risk" || opts.tier === "edge" || opts.tier === "stress"
+      ? riskSpecs()
+      : [];
   const deep = opts.tier === "deep" ? deepCuratedSpecs() : [];
   const publicCount = opts.publicRemix ?? defaults.publicRemix;
   const mutationCount = opts.publicMutation ?? defaults.publicMutation;
@@ -2832,6 +2984,7 @@ function allSpecs(opts) {
     ...edge,
     ...focused,
     ...state,
+    ...risk,
     ...deep,
     ...(opts.tier === "deep" ? deepPublicSpecs(publicCount) : []),
     ...(opts.tier === "deep" ? [] : remixPublicSpecs(publicCount)),

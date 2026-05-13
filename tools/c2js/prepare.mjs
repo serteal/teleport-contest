@@ -294,12 +294,18 @@ init_isaac64(unsigned long seed, int (*fn)(int))
 
 #ifdef NH_C2JS_RECORDER_PLATFORM
 /* c2js recorder fixed datetime timezone: public traces were recorded with
-   fixed datetimes interpreted as Eastern daylight time (UTC-04:00).  Avoid
-   Emscripten's host/browser timezone when converting those strings. */
-#define NH_C2JS_RECORDER_UTC_OFFSET_SECONDS (-4L * 60L * 60L)
+   fixed datetimes interpreted as Eastern daylight time (UTC-04:00).  Convert
+   recorder timestamps directly so wasm32 C long width cannot corrupt dates
+   past 2038 or any localtime-derived game state. */
+#define NH_C2JS_RECORDER_UTC_OFFSET_SECONDS (-4LL * 60LL * 60LL)
 
 staticfn int nh_c2js_leap_year(int);
-staticfn long nh_c2js_days_from_civil(int, unsigned, unsigned);
+staticfn long long nh_c2js_days_from_civil(int, unsigned, unsigned);
+staticfn void nh_c2js_civil_from_days(long long, int *, unsigned *,
+                                      unsigned *);
+staticfn int nh_c2js_parse_yyyymmddhhmmss(char *, int *, int *, int *, int *,
+                                          int *, int *);
+staticfn void nh_c2js_fill_tm(struct tm *, int, int, int, int, int, int);
 staticfn time_t nh_c2js_time_from_yyyymmddhhmmss(char *);
 staticfn struct tm *nh_c2js_tm_from_time(time_t);
 staticfn struct tm *nh_c2js_tm_from_yyyymmddhhmmss(char *);
@@ -310,64 +316,141 @@ nh_c2js_leap_year(int year)
     return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
 }
 
-staticfn long
+staticfn long long
 nh_c2js_days_from_civil(int year, unsigned month, unsigned day)
 {
-    int era, yoe;
-    unsigned doy, doe;
+    long long era;
+    unsigned yoe, doy, doe;
 
     year -= month <= 2;
     era = (year >= 0 ? year : year - 399) / 400;
     yoe = (unsigned) (year - era * 400);
     doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
     doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    return (long) era * 146097L + (long) doe - 719468L;
+    return era * 146097LL + (long long) doe - 719468LL;
+}
+
+staticfn void
+nh_c2js_civil_from_days(long long z, int *year, unsigned *month,
+                        unsigned *day)
+{
+    long long era;
+    unsigned doe, yoe, doy, mp;
+
+    z += 719468LL;
+    era = (z >= 0 ? z : z - 146096LL) / 146097LL;
+    doe = (unsigned) (z - era * 146097LL);
+    yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    *year = (int) yoe + (int) era * 400;
+    doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    mp = (5 * doy + 2) / 153;
+    *day = doy - (153 * mp + 2) / 5 + 1;
+    *month = mp + (mp < 10 ? 3 : -9);
+    *year += *month <= 2;
+}
+
+staticfn int
+nh_c2js_parse_yyyymmddhhmmss(char *buf, int *year, int *month, int *day,
+                             int *hour, int *minute, int *second)
+{
+    int i;
+
+    if (!buf || strlen(buf) != 14)
+        return 0;
+    for (i = 0; i < 14; ++i)
+        if (buf[i] < '0' || buf[i] > '9')
+            return 0;
+    *year = (buf[0] - '0') * 1000 + (buf[1] - '0') * 100
+            + (buf[2] - '0') * 10 + (buf[3] - '0');
+    *month = (buf[4] - '0') * 10 + (buf[5] - '0');
+    *day = (buf[6] - '0') * 10 + (buf[7] - '0');
+    *hour = (buf[8] - '0') * 10 + (buf[9] - '0');
+    *minute = (buf[10] - '0') * 10 + (buf[11] - '0');
+    *second = (buf[12] - '0') * 10 + (buf[13] - '0');
+    if (*month < 1 || *month > 12 || *day < 1 || *day > 31 || *hour > 23
+        || *minute > 59 || *second > 60)
+        return 0;
+    if ((*month == 4 || *month == 6 || *month == 9 || *month == 11)
+        && *day > 30)
+        return 0;
+    if (*month == 2
+        && *day > (nh_c2js_leap_year(*year) ? 29 : 28))
+        return 0;
+    return 1;
+}
+
+staticfn void
+nh_c2js_fill_tm(struct tm *t, int year, int month, int day, int hour,
+                int minute, int second)
+{
+    long long days = nh_c2js_days_from_civil(year, (unsigned) month,
+                                             (unsigned) day);
+    long long year_start = nh_c2js_days_from_civil(year, 1U, 1U);
+    int wday = (int) ((days + 4LL) % 7LL);
+
+    if (wday < 0)
+        wday += 7;
+    t->tm_sec = second;
+    t->tm_min = minute;
+    t->tm_hour = hour;
+    t->tm_mday = day;
+    t->tm_mon = month - 1;
+    t->tm_year = year - 1900;
+    t->tm_wday = wday;
+    t->tm_yday = (int) (days - year_start);
+    t->tm_isdst = 1;
 }
 
 staticfn time_t
 nh_c2js_time_from_yyyymmddhhmmss(char *buf)
 {
     int year, month, day, hour, minute, second;
-    long days;
+    long long days, epoch;
 
-    if (!buf || strlen(buf) != 14)
+    if (!nh_c2js_parse_yyyymmddhhmmss(buf, &year, &month, &day, &hour,
+                                      &minute, &second))
         return (time_t) 0;
-    year = (buf[0] - '0') * 1000 + (buf[1] - '0') * 100
-           + (buf[2] - '0') * 10 + (buf[3] - '0');
-    month = (buf[4] - '0') * 10 + (buf[5] - '0');
-    day = (buf[6] - '0') * 10 + (buf[7] - '0');
-    hour = (buf[8] - '0') * 10 + (buf[9] - '0');
-    minute = (buf[10] - '0') * 10 + (buf[11] - '0');
-    second = (buf[12] - '0') * 10 + (buf[13] - '0');
-    if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23
-        || minute > 59 || second > 60)
-        return (time_t) 0;
-
     days = nh_c2js_days_from_civil(year, (unsigned) month, (unsigned) day);
-    return (time_t) (days * 86400L + hour * 3600L + minute * 60L + second
-                     - NH_C2JS_RECORDER_UTC_OFFSET_SECONDS);
+    epoch = days * 86400LL + (long long) hour * 3600LL
+            + (long long) minute * 60LL + (long long) second
+            - NH_C2JS_RECORDER_UTC_OFFSET_SECONDS;
+    return (time_t) epoch;
 }
 
 staticfn struct tm *
 nh_c2js_tm_from_time(time_t date)
 {
     static struct tm t;
-    time_t shifted = date + NH_C2JS_RECORDER_UTC_OFFSET_SECONDS;
-    struct tm *gt = gmtime(&shifted);
+    long long shifted = (long long) date + NH_C2JS_RECORDER_UTC_OFFSET_SECONDS;
+    long long days = shifted / 86400LL;
+    long long rem = shifted % 86400LL;
+    int year, hour, minute, second;
+    unsigned month, day;
 
-    if (!gt)
-        return gt;
-    t = *gt;
-    t.tm_isdst = 1;
+    if (rem < 0) {
+        rem += 86400LL;
+        --days;
+    }
+    nh_c2js_civil_from_days(days, &year, &month, &day);
+    hour = (int) (rem / 3600LL);
+    rem %= 3600LL;
+    minute = (int) (rem / 60LL);
+    second = (int) (rem % 60LL);
+    nh_c2js_fill_tm(&t, year, (int) month, (int) day, hour, minute, second);
     return &t;
 }
 
 staticfn struct tm *
 nh_c2js_tm_from_yyyymmddhhmmss(char *buf)
 {
-    time_t parsed = nh_c2js_time_from_yyyymmddhhmmss(buf);
+    static struct tm t;
+    int year, month, day, hour, minute, second;
 
-    return parsed ? nh_c2js_tm_from_time(parsed) : (struct tm *) 0;
+    if (!nh_c2js_parse_yyyymmddhhmmss(buf, &year, &month, &day, &hour,
+                                      &minute, &second))
+        return (struct tm *) 0;
+    nh_c2js_fill_tm(&t, year, month, day, hour, minute, second);
+    return &t;
 }
 #endif
 
@@ -418,6 +501,37 @@ nh_c2js_tm_from_yyyymmddhhmmss(char *buf)
 #endif`,
     );
     writeFileSync(calendarPath, calendar);
+  }
+
+  const shknamPath = join(preparedSourceDir, "src/shknam.c");
+  let shknam = readFileSync(shknamPath, "utf8");
+  if (!shknam.includes("c2js recorder lp64 ubirthday shopkeeper")) {
+    shknam = shknam.replace(
+      `        int nseed = (int) ((long) ubirthday / 257L);`,
+      `#ifdef NH_C2JS_RECORDER_PLATFORM
+        /* c2js recorder lp64 ubirthday shopkeeper: native traces use a
+           64-bit long here, while the JS backend lowers C long to 32 bits. */
+        int nseed = (int) ((long long) ubirthday / 257LL);
+#else
+        int nseed = (int) ((long) ubirthday / 257L);
+#endif`,
+    );
+    writeFileSync(shknamPath, shknam);
+  }
+
+  const mkroomPath = join(preparedSourceDir, "src/mkroom.c");
+  let mkroom = readFileSync(mkroomPath, "utf8");
+  if (!mkroom.includes("c2js recorder lp64 ubirthday anthole")) {
+    mkroom = mkroom.replace(
+      `    indx = (int) ((long) ubirthday % 3L);`,
+      `#ifdef NH_C2JS_RECORDER_PLATFORM
+    /* c2js recorder lp64 ubirthday anthole: match native 64-bit long. */
+    indx = (int) ((long long) ubirthday % 3LL);
+#else
+    indx = (int) ((long) ubirthday % 3L);
+#endif`,
+    );
+    writeFileSync(mkroomPath, mkroom);
   }
 
   const mdlibPath = join(preparedSourceDir, "src/mdlib.c");
