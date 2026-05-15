@@ -293,19 +293,27 @@ init_isaac64(unsigned long seed, int (*fn)(int))
       `#include "hack.h"
 
 #ifdef NH_C2JS_RECORDER_PLATFORM
-/* c2js recorder fixed datetime timezone: public traces were recorded with
-   fixed datetimes interpreted as Eastern daylight time (UTC-04:00).  Convert
-   recorder timestamps directly so wasm32 C long width cannot corrupt dates
-   past 2038 or any localtime-derived game state. */
-#define NH_C2JS_RECORDER_UTC_OFFSET_SECONDS (-4LL * 60LL * 60LL)
+/* c2js recorder fixed datetime timezone: public traces are recorded with
+   TZ=America/New_York and fixed datetimes parsed through mktime().  The
+   recorder leaves tm_isdst set from the real current time, so fixed wall
+   times are interpreted as daylight time before localtime() renders them
+   back as New York civil time.  Keep that behavior deterministic in JS. */
+#define NH_C2JS_RECORDER_STD_OFFSET_SECONDS (-5LL * 60LL * 60LL)
+#define NH_C2JS_RECORDER_DST_OFFSET_SECONDS (-4LL * 60LL * 60LL)
+#define NH_C2JS_RECORDER_MKTIME_ISDST 1
 
 staticfn int nh_c2js_leap_year(int);
 staticfn long long nh_c2js_days_from_civil(int, unsigned, unsigned);
 staticfn void nh_c2js_civil_from_days(long long, int *, unsigned *,
                                       unsigned *);
+staticfn int nh_c2js_weekday_from_days(long long);
+staticfn unsigned nh_c2js_nth_sunday_mday(int, unsigned, unsigned);
+staticfn long long nh_c2js_epoch_from_civil_offset(int, unsigned, unsigned,
+                                                   int, int, int, long long);
+staticfn int nh_c2js_recorder_dst_for_epoch(long long);
 staticfn int nh_c2js_parse_yyyymmddhhmmss(char *, int *, int *, int *, int *,
                                           int *, int *);
-staticfn void nh_c2js_fill_tm(struct tm *, int, int, int, int, int, int);
+staticfn void nh_c2js_fill_tm(struct tm *, int, int, int, int, int, int, int);
 staticfn time_t nh_c2js_time_from_yyyymmddhhmmss(char *);
 staticfn struct tm *nh_c2js_tm_from_time(time_t);
 staticfn struct tm *nh_c2js_tm_from_yyyymmddhhmmss(char *);
@@ -350,6 +358,58 @@ nh_c2js_civil_from_days(long long z, int *year, unsigned *month,
 }
 
 staticfn int
+nh_c2js_weekday_from_days(long long days)
+{
+    int wday = (int) ((days + 4LL) % 7LL);
+
+    if (wday < 0)
+        wday += 7;
+    return wday;
+}
+
+staticfn unsigned
+nh_c2js_nth_sunday_mday(int year, unsigned month, unsigned nth)
+{
+    long long days = nh_c2js_days_from_civil(year, month, 1U);
+    unsigned first_sunday =
+        (unsigned) (1 + ((7 - nh_c2js_weekday_from_days(days)) % 7));
+
+    return first_sunday + 7U * (nth - 1U);
+}
+
+staticfn long long
+nh_c2js_epoch_from_civil_offset(int year, unsigned month, unsigned day,
+                                int hour, int minute, int second,
+                                long long offset)
+{
+    long long days = nh_c2js_days_from_civil(year, month, day);
+
+    return days * 86400LL + (long long) hour * 3600LL
+           + (long long) minute * 60LL + (long long) second - offset;
+}
+
+staticfn int
+nh_c2js_recorder_dst_for_epoch(long long epoch)
+{
+    long long shifted = epoch + NH_C2JS_RECORDER_STD_OFFSET_SECONDS;
+    long long days = shifted / 86400LL;
+    int year;
+    unsigned month, day, march_start, november_end;
+    long long start_epoch, end_epoch;
+
+    if (shifted < 0 && shifted % 86400LL)
+        --days;
+    nh_c2js_civil_from_days(days, &year, &month, &day);
+    march_start = nh_c2js_nth_sunday_mday(year, 3U, 2U);
+    november_end = nh_c2js_nth_sunday_mday(year, 11U, 1U);
+    start_epoch = nh_c2js_epoch_from_civil_offset(
+        year, 3U, march_start, 2, 0, 0, NH_C2JS_RECORDER_STD_OFFSET_SECONDS);
+    end_epoch = nh_c2js_epoch_from_civil_offset(
+        year, 11U, november_end, 2, 0, 0, NH_C2JS_RECORDER_DST_OFFSET_SECONDS);
+    return epoch >= start_epoch && epoch < end_epoch;
+}
+
+staticfn int
 nh_c2js_parse_yyyymmddhhmmss(char *buf, int *year, int *month, int *day,
                              int *hour, int *minute, int *second)
 {
@@ -381,15 +441,13 @@ nh_c2js_parse_yyyymmddhhmmss(char *buf, int *year, int *month, int *day,
 
 staticfn void
 nh_c2js_fill_tm(struct tm *t, int year, int month, int day, int hour,
-                int minute, int second)
+                int minute, int second, int isdst)
 {
     long long days = nh_c2js_days_from_civil(year, (unsigned) month,
                                              (unsigned) day);
     long long year_start = nh_c2js_days_from_civil(year, 1U, 1U);
-    int wday = (int) ((days + 4LL) % 7LL);
+    int wday = nh_c2js_weekday_from_days(days);
 
-    if (wday < 0)
-        wday += 7;
     t->tm_sec = second;
     t->tm_min = minute;
     t->tm_hour = hour;
@@ -398,30 +456,35 @@ nh_c2js_fill_tm(struct tm *t, int year, int month, int day, int hour,
     t->tm_year = year - 1900;
     t->tm_wday = wday;
     t->tm_yday = (int) (days - year_start);
-    t->tm_isdst = 1;
+    t->tm_isdst = isdst;
 }
 
 staticfn time_t
 nh_c2js_time_from_yyyymmddhhmmss(char *buf)
 {
     int year, month, day, hour, minute, second;
-    long long days, epoch;
+    long long offset;
 
     if (!nh_c2js_parse_yyyymmddhhmmss(buf, &year, &month, &day, &hour,
                                       &minute, &second))
         return (time_t) 0;
-    days = nh_c2js_days_from_civil(year, (unsigned) month, (unsigned) day);
-    epoch = days * 86400LL + (long long) hour * 3600LL
-            + (long long) minute * 60LL + (long long) second
-            - NH_C2JS_RECORDER_UTC_OFFSET_SECONDS;
-    return (time_t) epoch;
+    offset = NH_C2JS_RECORDER_MKTIME_ISDST
+                 ? NH_C2JS_RECORDER_DST_OFFSET_SECONDS
+                 : NH_C2JS_RECORDER_STD_OFFSET_SECONDS;
+    return (time_t) nh_c2js_epoch_from_civil_offset(
+        year, (unsigned) month, (unsigned) day, hour, minute, second, offset);
 }
 
 staticfn struct tm *
 nh_c2js_tm_from_time(time_t date)
 {
     static struct tm t;
-    long long shifted = (long long) date + NH_C2JS_RECORDER_UTC_OFFSET_SECONDS;
+    long long epoch = (long long) date;
+    int isdst = nh_c2js_recorder_dst_for_epoch(epoch);
+    long long shifted =
+        epoch
+        + (isdst ? NH_C2JS_RECORDER_DST_OFFSET_SECONDS
+                 : NH_C2JS_RECORDER_STD_OFFSET_SECONDS);
     long long days = shifted / 86400LL;
     long long rem = shifted % 86400LL;
     int year, hour, minute, second;
@@ -436,21 +499,19 @@ nh_c2js_tm_from_time(time_t date)
     rem %= 3600LL;
     minute = (int) (rem / 60LL);
     second = (int) (rem % 60LL);
-    nh_c2js_fill_tm(&t, year, (int) month, (int) day, hour, minute, second);
+    nh_c2js_fill_tm(&t, year, (int) month, (int) day, hour, minute, second,
+                    isdst);
     return &t;
 }
 
 staticfn struct tm *
 nh_c2js_tm_from_yyyymmddhhmmss(char *buf)
 {
-    static struct tm t;
-    int year, month, day, hour, minute, second;
+    time_t date = nh_c2js_time_from_yyyymmddhhmmss(buf);
 
-    if (!nh_c2js_parse_yyyymmddhhmmss(buf, &year, &month, &day, &hour,
-                                      &minute, &second))
+    if (date == (time_t) 0)
         return (struct tm *) 0;
-    nh_c2js_fill_tm(&t, year, month, day, hour, minute, second);
-    return &t;
+    return nh_c2js_tm_from_time(date);
 }
 #endif
 
@@ -474,19 +535,37 @@ nh_c2js_tm_from_yyyymmddhhmmss(char *buf)
     }`,
     );
     calendar = calendar.replace(
+      `time_t
+time_from_yyyymmddhhmmss(char *buf)
+{
+    int k;`,
+      `time_t
+time_from_yyyymmddhhmmss(char *buf)
+{
+#ifdef NH_C2JS_RECORDER_PLATFORM
+    return nh_c2js_time_from_yyyymmddhhmmss(buf);
+#else
+    int k;`,
+    );
+    calendar = calendar.replace(
+      `    return (time_t) 0;
+}
+
+/*
+ * moon period`,
+      `    return (time_t) 0;
+#endif
+}
+
+/*
+ * moon period`,
+    );
+    calendar = calendar.replace(
       `    time_t date = getnow();
 
     return localtime((LOCALTIME_type) &date);`,
       `    time_t date = getnow();
 #ifdef NH_C2JS_RECORDER_PLATFORM
-    const char *fixed_dt = nh_getenv("NETHACK_FIXED_DATETIME");
-
-    if (fixed_dt && *fixed_dt) {
-        struct tm *fixed_tm = nh_c2js_tm_from_yyyymmddhhmmss((char *) fixed_dt);
-
-        if (fixed_tm)
-            return fixed_tm;
-    }
     return nh_c2js_tm_from_time(date);
 #else
     return localtime((LOCALTIME_type) &date);

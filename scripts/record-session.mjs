@@ -474,6 +474,7 @@ async function recordSegment({
   const expectedSteps = moves.length + 1;
   const steps = [];
   const animationFrames = [];
+  const animationFramesByStep = new Map();
   let lastRngBytes = 0;
   let nextKeyIdx = 0;
   let timeoutHandle = null;
@@ -543,13 +544,40 @@ async function recordSegment({
     resolveDone(reason);
   };
 
+  // Input markers bump SEQ before capture (input SEQ N -> step N - 1).
+  // Animation markers fire while a command is resolving, so their current
+  // SEQ already names the command/result step they belong to.
+  const stepIndexForCaptureSeq = (seq) => Math.max(0, seq || 0);
+
+  const attachAnimationFrame = (stepIdx, frame) => {
+    if (steps[stepIdx]) {
+      if (!Array.isArray(steps[stepIdx].animation_frames)) {
+        steps[stepIdx].animation_frames = [];
+      }
+      steps[stepIdx].animation_frames.push(frame);
+      return;
+    }
+    const pending = animationFramesByStep.get(stepIdx);
+    if (pending) {
+      pending.push(frame);
+    } else {
+      animationFramesByStep.set(stepIdx, [frame]);
+    }
+  };
+
   const onMarker = async (m) => {
     if (m.kind === "anim") {
+      const screen = encodeScreenAnsiRle(payloadToLines(m.payload));
+      const cursor = [m.cx, m.cy, 1];
       animationFrames.push({
-        screen: encodeScreenAnsiRle(payloadToLines(m.payload)),
-        cursor: [m.cx, m.cy, 1],
+        screen,
+        cursor,
         seq: m.seq,
         anim: m.anim,
+      });
+      attachAnimationFrame(stepIndexForCaptureSeq(m.seq), {
+        screen,
+        cursor,
       });
       return;
     }
@@ -564,7 +592,13 @@ async function recordSegment({
       const rng = await readRngDelta();
       const stepIdx = m.seq - 1;
       const key = stepIdx === 0 ? null : (moves[stepIdx - 1] ?? null);
-      steps.push({ key, rng, screen, cursor: [m.cx, m.cy, 1] });
+      const step = { key, rng, screen, cursor: [m.cx, m.cy, 1] };
+      const pendingAnimationFrames = animationFramesByStep.get(stepIdx);
+      if (pendingAnimationFrames?.length) {
+        step.animation_frames = pendingAnimationFrames;
+        animationFramesByStep.delete(stepIdx);
+      }
+      steps.push(step);
 
       if (steps.length >= expectedSteps) {
         finish("expected steps reached");

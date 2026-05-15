@@ -54,6 +54,18 @@ const datetimes = [
   "20040929010101",
   "20260506120000",
 ];
+const forensicDatetimes = [
+  "19691231235959",
+  "19700101000000",
+  "19991231235959",
+  "20000229010101",
+  "20001013090000",
+  "20380119031406",
+  "20380119031407",
+  "20380119031408",
+  "20390101000000",
+  "21000101000000",
+];
 
 function usage() {
   return `Usage: node ${scriptPath} [options]
@@ -63,7 +75,7 @@ against them with the existing analyzer.
 
 Options:
   --out DIR              Output directory (default .cache/local-traces)
-  --tier NAME            smoke | default | stress | edge | deep | state | risk (default default)
+  --tier NAME            smoke | default | stress | edge | deep | state | risk | forensic (default default)
   --count N              Number of fuzz specs (tier default when omitted)
   --public-remix N       Number of public keyplan remixes (tier default when omitted)
   --public-mutation N    Number of public keyplan mutation specs (tier default when omitted)
@@ -144,12 +156,19 @@ function parseArgs(argv) {
   }
 
   if (
-    !["smoke", "default", "stress", "edge", "deep", "state", "risk"].includes(
-      opts.tier,
-    )
+    ![
+      "smoke",
+      "default",
+      "stress",
+      "edge",
+      "deep",
+      "state",
+      "risk",
+      "forensic",
+    ].includes(opts.tier)
   ) {
     throw new Error(
-      `Unknown tier ${opts.tier}; expected smoke, default, stress, edge, deep, state, or risk`,
+      `Unknown tier ${opts.tier}; expected smoke, default, stress, edge, deep, state, risk, or forensic`,
     );
   }
   if (opts.count != null && (!Number.isInteger(opts.count) || opts.count < 0)) {
@@ -2694,6 +2713,693 @@ function riskSpecs() {
   return out;
 }
 
+function tagSpecsForForensics(specs, prefix) {
+  return specs.map((traceSpec) => ({
+    ...traceSpec,
+    slug: `${prefix}-${traceSpec.slug}`,
+    source: `forensic:${traceSpec.source}`,
+    tags: [...new Set(["forensic", ...(traceSpec.tags || [])])].sort(),
+    segments: traceSpec.segments.map((segment) => ({ ...segment })),
+  }));
+}
+
+function forensicPlatformTimeSpecs() {
+  const out = [];
+  const publicByName = new Map(
+    readPublicSessions().map((entry) => [entry.name, entry]),
+  );
+  const publicDateMatrix = [
+    "19691231235959",
+    "20380119031406",
+    "20380119031407",
+    "20390101000000",
+  ];
+  const publicNames = [
+    "seed0013-rogue-friday13-combat.session.json",
+    "seed0014-dequa-fountain-explore.session.json",
+    "seed0108-wizard-extcmd-wishlist.session.json",
+    "seed0116-wizard-wear-shop.session.json",
+    "seed0360-wizard-world-tour.session.json",
+    "seed0383-wizard-hallucinate.session.json",
+  ];
+
+  for (const [publicIndex, name] of publicNames.entries()) {
+    const segment = publicByName.get(name)?.session?.segments?.[0];
+    if (!segment) continue;
+    for (const [dateIndex, datetime] of publicDateMatrix.entries()) {
+      out.push(
+        spec(
+          `forensic-time-public-${slugify(name.replace(/\.session\.json$/, ""))}-${datetime}`,
+          {
+            description: `public keyplan ${name} replayed at platform-risk datetime ${datetime}`,
+            source: `forensic-platform-public:${name}`,
+            tags: [
+              "forensic",
+              "platform-time",
+              "public-keyplan",
+              datetime < "19700101000000" ? "pre-epoch" : "post-epoch",
+              datetime >= "20380119031407" ? "post-2038" : "pre-2038",
+            ],
+            seed:
+              Number(segment.seed || 0) + publicIndex * 1009 + dateIndex * 17,
+            datetime,
+            nethackrc: segment.nethackrc || "",
+            moves: String(segment.moves || "").slice(0, 900),
+          },
+        ),
+      );
+    }
+  }
+
+  for (const [dateIndex, datetime] of forensicDatetimes.entries()) {
+    out.push(
+      spec(`forensic-time-version-${datetime}`, {
+        description:
+          "version/options/debug metadata at platform-risk datetimes",
+        source: "forensic-platform-curated",
+        tags: [
+          "forensic",
+          "platform-time",
+          "version",
+          "options",
+          datetime < "19700101000000" ? "pre-epoch" : "post-epoch",
+          datetime >= "20380119031407" ? "post-2038" : "pre-2038",
+        ],
+        seed: 96000 + dateIndex,
+        datetime,
+        nethackrc: rc({
+          name: `TimeV${dateIndex}`,
+          role: "Wizard",
+          race: "human",
+          gender: "female",
+          align: "neutral",
+          playmode: "debug",
+          options: ["menustyle:full"],
+        }),
+        moves: "  n#version\n \u001bO\u001b#overview\n \u001bss:",
+      }),
+    );
+  }
+
+  for (const [dateIndex, datetime] of forensicDatetimes.entries()) {
+    if (dateIndex % 2) continue;
+    out.push(
+      spec(`forensic-time-death-record-${datetime}`, {
+        description: "death, disclosure, and score-file text at risky dates",
+        source: "forensic-platform-curated",
+        tags: [
+          "forensic",
+          "platform-time",
+          "death",
+          "topten",
+          "record-file",
+          datetime < "19700101000000" ? "pre-epoch" : "post-epoch",
+          datetime >= "20380119031407" ? "post-2038" : "pre-2038",
+        ],
+        seed: 96100 + dateIndex,
+        datetime,
+        nethackrc: rc({
+          name: `TimeD${dateIndex}`,
+          role: "Wizard",
+          race: "human",
+          gender: "female",
+          align: "neutral",
+          playmode: "debug",
+          options: ["!toptenwin", "tombstone", "disclose:yi ya yv yg yc yo"],
+        }),
+        moves: "  n\u0017wand of death\nzs.  yy yyyy ",
+      }),
+    );
+  }
+
+  for (const [dateIndex, datetime] of [
+    "20380119031407",
+    "20390101000000",
+    "21000101000000",
+  ].entries()) {
+    out.push(
+      spec(`forensic-time-lua-branch-${datetime}`, {
+        description:
+          "Lua/special-level branch generation at post-2038 datetimes",
+        source: "forensic-platform-curated",
+        tags: [
+          "forensic",
+          "platform-time",
+          "post-2038",
+          "lua",
+          "wizard",
+          "levelchange",
+          "special-level",
+          "branch-tour",
+        ],
+        seed: 96200 + dateIndex,
+        datetime,
+        nethackrc: rc({
+          name: `TimeL${dateIndex}`,
+          role: "Wizard",
+          race: "human",
+          gender: "female",
+          align: "neutral",
+          playmode: "debug",
+          options: ["lit_corridor"],
+        }),
+        moves:
+          "  n#levelchange\n2\n  \u0012#levelchange\n10\n  \u0012#levelchange\n20\n  \u0012#overview\n \u001bss:",
+      }),
+    );
+  }
+
+  return out;
+}
+
+function forensicStorageSpecs() {
+  const out = [];
+  const wizard = (name, options = [], lines = []) =>
+    rc({
+      name,
+      role: "Wizard",
+      race: "human",
+      gender: "female",
+      align: "neutral",
+      playmode: "debug",
+      options,
+      lines,
+    });
+  const rogue = (name, options = []) =>
+    rc({
+      name,
+      role: "Rogue",
+      race: "human",
+      gender: "female",
+      align: "chaotic",
+      pettype: "cat",
+      options,
+    });
+
+  out.push(
+    spec("forensic-storage-save-restore-death-restart", {
+      description:
+        "save, restore, death/record output, then same-name restart after save deletion",
+      source: "forensic-storage-curated",
+      tags: [
+        "forensic",
+        "storage",
+        "save-restore",
+        "save-delete",
+        "death",
+        "record-file",
+        "topten",
+        "fresh-restart",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 96300,
+          datetime: "20380119031407",
+          nethackrc: wizard("FsDeath", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "  n\u0017blessed +3 speed boots\nLLLhhhjjj,,,i\u001bSy",
+        },
+        {
+          seed: 96301,
+          datetime: "20380119031407",
+          nethackrc: wizard("FsDeath", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "\u0017wand of death\nzs.  yy yyyy ",
+        },
+        {
+          seed: 96302,
+          datetime: "20380119031407",
+          nethackrc: wizard("FsDeath", [
+            "!toptenwin",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "  n#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("forensic-storage-active-lock-cancel-destroy-chain", {
+      description:
+        "unfinished game creates active lock, next segment cancels, then later segment destroys and restarts",
+      source: "forensic-storage-curated",
+      tags: [
+        "forensic",
+        "storage",
+        "active-lock",
+        "unfinished",
+        "cancel",
+        "destroy",
+        "fresh-restart",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 96310,
+          datetime: "20001013090000",
+          nethackrc: rogue("FsLock", ["disclose:-i -a -v -g -c -o"]),
+          moves: "  nLLLhhhjjj,,,i\u001b",
+        },
+        {
+          seed: 96311,
+          datetime: "20001013090000",
+          nethackrc: rogue("FsLock", ["disclose:-i -a -v -g -c -o"]),
+          moves: "n",
+        },
+        {
+          seed: 96312,
+          datetime: "20001013090000",
+          nethackrc: rogue("FsLock", ["disclose:-i -a -v -g -c -o"]),
+          moves: "y  ni\u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("forensic-storage-regularized-name-collision", {
+      description:
+        "regularized rc names with punctuation exercise save-file lookup collisions",
+      source: "forensic-storage-curated",
+      tags: [
+        "forensic",
+        "storage",
+        "save-restore",
+        "filename",
+        "regularize",
+        "punctuation",
+        "name-isolation",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 96320,
+          datetime: "20260506120000",
+          nethackrc: rogue("Fs.Name/One", ["disclose:-i -a -v -g -c -o"]),
+          moves: "  nLLLhhhjjj,,,Sy",
+        },
+        {
+          seed: 96321,
+          datetime: "20260506120000",
+          nethackrc: rogue("Fs Name One", ["disclose:-i -a -v -g -c -o"]),
+          moves: "  ni\u001b#quit\ry",
+        },
+        {
+          seed: 96322,
+          datetime: "20260506120000",
+          nethackrc: rogue("Fs.Name/One", ["disclose:-i -a -v -g -c -o"]),
+          moves: "i\u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("forensic-storage-bones-record-reuse", {
+      description:
+        "bones creation, later bones-enabled startup, and score files in one session VFS",
+      source: "forensic-storage-curated",
+      tags: [
+        "forensic",
+        "storage",
+        "bones",
+        "death",
+        "record-file",
+        "topten",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 96330,
+          datetime: "20001013090000",
+          nethackrc: wizard("FsBonesA", [
+            "!toptenwin",
+            "tombstone",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "  n\u0017wand of death\nzs.  yy yyyy ",
+        },
+        {
+          seed: 96331,
+          datetime: "20001013090000",
+          nethackrc: wizard("FsBonesB", [
+            "!toptenwin",
+            "bones",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "  nLLLhhhjjj,,,i\u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  out.push(
+    spec("forensic-storage-restore-changed-rc-time", {
+      description:
+        "save at one date, restore at another date with changed terminal/display rc",
+      source: "forensic-storage-curated",
+      tags: [
+        "forensic",
+        "storage",
+        "save-restore",
+        "rc-change",
+        "platform-time",
+        "post-2038",
+        "symset",
+        "display",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 96340,
+          datetime: "19991231235959",
+          nethackrc: rogue("FsSwap", [
+            "msg_window:reversed",
+            "disclose:-i -a -v -g -c -o",
+          ]),
+          moves: "  nLLLhhhjjj,,,i\u001bSy",
+        },
+        {
+          seed: 96341,
+          datetime: "20390101000000",
+          nethackrc: rc({
+            name: "FsSwap",
+            role: "Rogue",
+            race: "human",
+            gender: "female",
+            align: "chaotic",
+            pettype: "cat",
+            symset: "IBMgraphics",
+            options: [
+              "msg_window:full",
+              "msghistory:80",
+              "disclose:-i -a -v -g -c -o",
+            ],
+          }),
+          moves: "i\u001b+\u001b\\\u001b\u0018 \u001b#quit\ry",
+        },
+      ],
+    }),
+  );
+
+  return out;
+}
+
+function forensicHostBoundarySpecs() {
+  const out = [];
+  const promptRc = (options = []) =>
+    [
+      "OPTIONS=role:Samurai,race:human,gender:male,align:lawful",
+      "OPTIONS=!autopickup,!legacy,!tutorial,!splash_screen,pettype:none",
+      "OPTIONS=pushweapon,showexp,time,color,suppress_alert:3.4.3",
+      "OPTIONS=symset:DECgraphics",
+      options.length ? `OPTIONS=${options.join(",")}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+  out.push(
+    spec("forensic-host-name-empty-default", {
+      description: "empty interactive name then normal startup choices",
+      source: "forensic-host-curated",
+      tags: ["forensic", "host-boundary", "name-prompt", "empty-name"],
+      seed: 96400,
+      datetime: "20260506120000",
+      nethackrc: promptRc(["disclose:-i -a -v -g -c -o"]),
+      moves: "\r LLlkLLHjjjLLLL......HHHHHkkkkkki\u001bss:",
+    }),
+  );
+
+  out.push(
+    spec("forensic-host-name-editing-control-keys", {
+      description:
+        "interactive name prompt escape, backspace, kill-line, and retry behavior",
+      source: "forensic-host-curated",
+      tags: [
+        "forensic",
+        "host-boundary",
+        "name-prompt",
+        "line-edit",
+        "backspace",
+        "escape",
+      ],
+      seed: 96401,
+      datetime: "20260506120000",
+      nethackrc: promptRc(["disclose:-i -a -v -g -c -o"]),
+      moves:
+        "Wrong\u001bTemp\b\u0015FinalName\r LLlkLLHjjjLLLL......HHHHHkkkkkkssss:",
+    }),
+  );
+
+  out.push(
+    spec("forensic-host-debug-no-name-version", {
+      description:
+        "debug playmode without name uses native whoami/default handling",
+      source: "forensic-host-curated",
+      tags: ["forensic", "host-boundary", "debug", "whoami", "version"],
+      seed: 96402,
+      datetime: "20380119031407",
+      nethackrc:
+        [
+          "OPTIONS=role:Wizard,race:human,gender:female,align:neutral,playmode:debug",
+          "OPTIONS=!autopickup,!legacy,!tutorial,!splash_screen,pettype:none",
+          "OPTIONS=pushweapon,showexp,time,color,suppress_alert:3.4.3",
+          "OPTIONS=symset:DECgraphics",
+        ].join("\n") + "\n",
+      moves: "  n#version\n \u001b#quit\ry",
+    }),
+  );
+
+  out.push(
+    spec("forensic-host-long-replay-budget", {
+      description:
+        "moderately long replay loop with waits and redraws below stress-suite size",
+      source: "forensic-host-curated",
+      tags: [
+        "forensic",
+        "host-boundary",
+        "long-replay",
+        "capture-buffer",
+        "screen-count",
+      ],
+      seed: 96403,
+      datetime: "20010401073000",
+      nethackrc: rc({
+        name: "HostWait",
+        role: "Tourist",
+        race: "human",
+        gender: "female",
+        align: "neutral",
+        pettype: "none",
+      }),
+      moves: `  n${".".repeat(1800)}i\u001bss:`,
+    }),
+  );
+
+  out.push(
+    spec("forensic-host-short-input-at-prompts", {
+      description:
+        "segments intentionally stop at startup, restore, and quit prompts",
+      source: "forensic-host-curated",
+      tags: [
+        "forensic",
+        "host-boundary",
+        "prompt",
+        "input-exhaustion",
+        "active-lock",
+        "multisegment",
+      ],
+      segments: [
+        {
+          seed: 96410,
+          datetime: "20001013090000",
+          nethackrc: rc({
+            name: "HostShort",
+            role: "Rogue",
+            race: "human",
+            gender: "female",
+            align: "chaotic",
+            pettype: "cat",
+          }),
+          moves: "  ni\u001b",
+        },
+        {
+          seed: 96411,
+          datetime: "20001013090000",
+          nethackrc: rc({
+            name: "HostShort",
+            role: "Rogue",
+            race: "human",
+            gender: "female",
+            align: "chaotic",
+            pettype: "cat",
+          }),
+          moves: "",
+        },
+      ],
+    }),
+  );
+
+  return out;
+}
+
+function forensicTerminalCursorSpecs() {
+  const out = [];
+  const wizard = (name, options = [], lines = []) =>
+    rc({
+      name,
+      role: "Wizard",
+      race: "human",
+      gender: "female",
+      align: "neutral",
+      playmode: "debug",
+      options,
+      lines,
+    });
+
+  out.push(
+    spec("forensic-terminal-scrolling-menu-cursor", {
+      description:
+        "large menus, scrolling inventory, and cursor position after menu exits",
+      source: "forensic-terminal-curated",
+      tags: ["forensic", "terminal", "menu", "cursor", "inventory"],
+      seed: 96500,
+      datetime: "20010401073000",
+      nethackrc: wizard("TermMenu", [
+        "menustyle:full",
+        "force_invmenu",
+        "menu_objsyms:both",
+        "menu_headings:cyan&inverse",
+      ]),
+      moves:
+        "  n\u0017blessed +3 speed boots\n\u0017cursed scroll of identify\n\u0017uncursed wand of digging\n" +
+        "\u0017bag of holding\n\u001720 rocks\n\u001720 food rations\n\u0017magic marker\n" +
+        "i\u001bda\u001b+a\u001b\\a\u001b\u0018 \u001bO\u001bss:",
+    }),
+  );
+
+  out.push(
+    spec("forensic-terminal-getpos-message-wrap", {
+      description:
+        "cursor prompts after long message wrapping and previous-message redraws",
+      source: "forensic-terminal-curated",
+      tags: [
+        "forensic",
+        "terminal",
+        "cursor",
+        "getpos",
+        "message-wrap",
+        "more",
+      ],
+      seed: 96501,
+      datetime: "20001111120000",
+      nethackrc: wizard("TermCursor", [
+        "msg_window:reversed",
+        "msghistory:80",
+        "standout",
+      ]),
+      moves:
+        "  nE- this engraving deliberately fills enough of the message line to stress cursor bookkeeping at the right edge\r" +
+        "\u0010 \u001b;hhhhllllkkkkjjjj\r \u001b/?fountain\r \u001bss:",
+    }),
+  );
+
+  out.push(
+    spec("forensic-terminal-status-three-lines", {
+      description:
+        "three status lines, color hilites, dark-gray options, and redraw",
+      source: "forensic-terminal-curated",
+      tags: ["forensic", "terminal", "status-line", "color", "hilite"],
+      seed: 96502,
+      datetime: "20260506120000",
+      nethackrc: wizard(
+        "TermStatus",
+        [
+          "statuslines:3",
+          "terrainstatus",
+          "weaponstatus",
+          "hitpointbar",
+          "use_darkgray",
+          "hilite_pet",
+        ],
+        [
+          "OPTIONS=hilite_status: hitpoints/100%/gray&normal",
+          "OPTIONS=hilite_status: hitpoints/<50%/yellow&inverse",
+          "OPTIONS=hilite_status: condition/hallu+blind+conf+stun/red&inverse",
+        ],
+      ),
+      moves:
+        "  n\u0017loadstone\n\u0017wand of death\n#wizintrinsic\nh\nz. n \u0012i\u001bss:",
+    }),
+  );
+
+  out.push(
+    spec("forensic-terminal-symbol-matrix", {
+      description:
+        "Enhanced symbols, custom symbols, line drawing, farlook and redraws",
+      source: "forensic-terminal-curated",
+      tags: ["forensic", "terminal", "symset", "cursor", "redraw"],
+      seed: 96503,
+      datetime: "20040929010101",
+      nethackrc: rc({
+        name: "TermSym",
+        role: "Ranger",
+        race: "elf",
+        gender: "female",
+        align: "chaotic",
+        symset: "Enhanced2",
+        options: ["windowborders:2", "mention_walls", "!use_darkgray"],
+      }),
+      moves:
+        "  n\u0012;hhhhllllkkkkjjjj\r \u001b/?fountain\r /?door\r \u001bi\u001bss:",
+    }),
+  );
+
+  out.push(
+    spec("forensic-terminal-animation-stack", {
+      description: "beam and explosion animation frames with cursor snapshots",
+      source: "forensic-terminal-curated",
+      tags: [
+        "forensic",
+        "terminal",
+        "animation",
+        "beam",
+        "explosion",
+        "display-rng",
+      ],
+      seed: 96504,
+      datetime: "20020222151500",
+      nethackrc: wizard("TermAnim", ["sparkle", "lit_corridor"]),
+      moves:
+        "  n\u0017wand of fire\n\u0017wand of cold\n\u0017wand of lightning\n\u0017wand of magic missile\n" +
+        "\u0007gas spore\n\u0007floating eye\nzhzhzlzkzj y y y y y ",
+    }),
+  );
+
+  return out;
+}
+
+function forensicSpecs() {
+  return [
+    ...forensicPlatformTimeSpecs(),
+    ...tagSpecsForForensics(stateSpecs(), "forensic-state"),
+    ...tagSpecsForForensics(riskSpecs(), "forensic-risk"),
+    ...forensicStorageSpecs(),
+    ...forensicHostBoundarySpecs(),
+    ...forensicTerminalCursorSpecs(),
+    ...tagSpecsForForensics(deepCuratedSpecs(), "forensic-deep"),
+    ...tagSpecsForForensics(deepPublicSpecs(10), "forensic-deep-public"),
+  ];
+}
+
 function readPublicSessions() {
   if (!existsSync(sessionsDir)) return [];
   return readdirSync(sessionsDir)
@@ -2952,6 +3658,13 @@ function tierDefaults(tier) {
       publicRemix: 0,
       publicMutation: 0,
     };
+  if (tier === "forensic")
+    return {
+      curatedLimit: 0,
+      count: 0,
+      publicRemix: 0,
+      publicMutation: 0,
+    };
   return {
     curatedLimit: Infinity,
     count: 72,
@@ -2976,6 +3689,7 @@ function allSpecs(opts) {
       ? riskSpecs()
       : [];
   const deep = opts.tier === "deep" ? deepCuratedSpecs() : [];
+  const forensic = opts.tier === "forensic" ? forensicSpecs() : [];
   const publicCount = opts.publicRemix ?? defaults.publicRemix;
   const mutationCount = opts.publicMutation ?? defaults.publicMutation;
   const fuzzCount = opts.count ?? defaults.count;
@@ -2986,6 +3700,7 @@ function allSpecs(opts) {
     ...state,
     ...risk,
     ...deep,
+    ...forensic,
     ...(opts.tier === "deep" ? deepPublicSpecs(publicCount) : []),
     ...(opts.tier === "deep" ? [] : remixPublicSpecs(publicCount)),
     ...publicMutationSpecs(mutationCount),
@@ -3205,6 +3920,18 @@ function collectScreenFeatures(screen, features) {
     ],
     ["shopText", /shop|zorkmid|For you, .* only|unpaid/],
     ["questText", /quest|leader|nemesis|Home/],
+    [
+      "saveRestoreText",
+      /Restoring save file|Restored|Saving|Really save|save file|saved game/i,
+    ],
+    [
+      "activeLockText",
+      /already a game|old game|recover|destroy|active lock|lock file/i,
+    ],
+    ["bonesText", /bones|You feel uneasy|strange feeling/i],
+    ["namePrompt", /Who are you|what is your name|Hello .*welcome/i],
+    ["versionText", /NetHack|Version|windows and\/or ports/i],
+    ["optionText", /Options|Boolean option|Compounds|Run-time option/i],
   ];
 
   for (const [name, pattern] of rules) {
@@ -3237,6 +3964,7 @@ function featuresForSession(outputPath) {
     byFeature: {},
   };
   for (const segment of session.segments || []) {
+    let segmentStepAnimationFrames = 0;
     for (const step of segment.steps || []) {
       features.rngEntries += Array.isArray(step.rng) ? step.rng.length : 0;
       features.displayRngEntries += (step.rng || []).filter((entry) =>
@@ -3246,7 +3974,14 @@ function featuresForSession(outputPath) {
         features.screens++;
         collectScreenFeatures(step.screen, features);
       }
+      for (const frame of step.animation_frames || []) {
+        segmentStepAnimationFrames++;
+        if (typeof frame.screen === "string")
+          collectScreenFeatures(frame.screen, features);
+      }
     }
+    features.animationFrames += segmentStepAnimationFrames;
+    if (segmentStepAnimationFrames > 0) continue;
     for (const frame of segment.animation_frames || []) {
       features.animationFrames++;
       if (typeof frame.screen === "string")
@@ -3285,7 +4020,10 @@ function coverageSummary(entries) {
     for (const tag of entry.tags || []) byTag[tag] = (byTag[tag] || 0) + 1;
     for (const segment of entry.segments || []) {
       segments++;
-      moves += segment.moves || 0;
+      moves +=
+        typeof segment.moves === "number"
+          ? segment.moves
+          : String(segment.moves || "").length;
     }
     mergeFeatures(features, entry.features);
   }
@@ -3308,6 +4046,61 @@ function coverageSummary(entries) {
       ),
     },
   };
+}
+
+const forensicRequiredCoverage = {
+  labels: [
+    "active-lock",
+    "animation",
+    "bones",
+    "cursor",
+    "death",
+    "display-rng",
+    "host-boundary",
+    "line-edit",
+    "lua",
+    "menu",
+    "name-prompt",
+    "platform-time",
+    "post-2038",
+    "pre-epoch",
+    "record-file",
+    "save-restore",
+    "shop",
+    "storage",
+    "symset",
+    "terminal",
+    "topten",
+    "version",
+  ],
+  screenFeatures: [
+    "decCharset",
+    "death",
+    "fullHeightScreen",
+    "getposPrompt",
+    "inventory",
+    "sgr",
+    "statusLine",
+    "topten",
+    "ynPrompt",
+  ],
+};
+
+function missingForensicCoverage(coverage) {
+  const byTag = coverage?.byTag || {};
+  const byFeature = coverage?.features?.byFeature || {};
+  const labelSet = new Set([...Object.keys(byTag), ...Object.keys(byFeature)]);
+  const missing = [];
+  for (const label of forensicRequiredCoverage.labels) {
+    if (!labelSet.has(label)) missing.push(`label:${label}`);
+  }
+  for (const feature of forensicRequiredCoverage.screenFeatures) {
+    if (!byFeature[feature]) missing.push(`screen:${feature}`);
+  }
+  if (!coverage?.features?.animationFrames)
+    missing.push("screen:animationFrames");
+  if (!coverage?.features?.displayRngEntries) missing.push("rng:displayRng");
+  return missing;
 }
 
 function runTool(label, args, opts) {
@@ -3391,6 +4184,13 @@ async function main() {
   }
 
   manifest.coverage = coverageSummary(manifest.entries);
+  if (opts.tier === "forensic" && !opts.dryRun) {
+    manifest.coverage.required = {
+      labels: forensicRequiredCoverage.labels,
+      screenFeatures: forensicRequiredCoverage.screenFeatures,
+      missing: missingForensicCoverage(manifest.coverage),
+    };
+  }
   writeFileSync(
     join(opts.outDir, "manifest.json"),
     `${JSON.stringify(manifest, null, 2)}\n`,
@@ -3404,6 +4204,13 @@ async function main() {
     console.error(`[trace] wrote feature report ${opts.featureReport}`);
   }
   console.error(`[trace] wrote ${join(opts.outDir, "manifest.json")}`);
+
+  if (manifest.coverage?.required?.missing?.length) {
+    console.error(
+      `[trace] forensic coverage missing: ${manifest.coverage.required.missing.join(", ")}`,
+    );
+    process.exitCode = 1;
+  }
 
   if (manifest.failures.length) {
     console.error(`[trace] ${manifest.failures.length} recorder failures`);
