@@ -216,6 +216,10 @@ function attachInteractiveDisplay(game, display) {
   renderLatestCapturedScreen(game, display);
 }
 
+function hasExportedFunction(mod, name) {
+  return typeof mod?.[`_${name}`] === "function";
+}
+
 export class NethackGame {
   constructor(opts = {}) {
     this._seed = opts.seed || 0;
@@ -229,6 +233,10 @@ export class NethackGame {
     this._animationFramesByStep = [];
     this._rngLog = [];
     this._stderr = [];
+    this._rawScreenCount = 0;
+    this._rawAnimationCount = 0;
+    this._started = false;
+    this._inputExhausted = false;
   }
 
   async start() {
@@ -246,6 +254,43 @@ export class NethackGame {
       [String(this._seed ?? 0), this._datetime, this._nethackrc, this._moves],
     );
 
+    this._runSession();
+    this._harvestCapturedScreens();
+    correctNamePromptCapture(this._screens, this._cursors, this._moves);
+    this._harvestCapturedAnimations();
+    this._harvestRngLog();
+    snapshotPersistentFs(mod.FS, this._storage);
+    if (this._pendingDisplay)
+      attachInteractiveDisplay(this, this._pendingDisplay);
+  }
+
+  async pushKey(keyCode, opts = {}) {
+    const { harvestRng = true, snapshotStorage = true } = opts;
+    if (!this.canAcceptInteractiveKey()) {
+      throw new Error("NetHack engine is not at an incremental input boundary");
+    }
+    this._module.ccall("nhjs_session_push_key", null, ["number"], [keyCode]);
+    this._moves += String.fromCharCode(keyCode);
+    this._runSession();
+    this._harvestCapturedScreens();
+    this._harvestCapturedAnimations();
+    if (harvestRng) this._harvestRngLog();
+    if (snapshotStorage) snapshotPersistentFs(this._module.FS, this._storage);
+  }
+
+  canAcceptInteractiveKey() {
+    if (!this._module || !this._started || !this._inputExhausted) return false;
+    if (!hasExportedFunction(this._module, "nhjs_session_push_key"))
+      return false;
+    const screen = this._screens[this._screens.length - 1] || "";
+    if (screen.includes("--More--")) return false;
+    if (screen.includes("Do you want a tutorial?")) return false;
+    const cursor = this._cursors[this._cursors.length - 1];
+    return (cursor?.[1] ?? 0) > 0;
+  }
+
+  _runSession() {
+    const mod = this._module;
     const chunkIterations = 10000;
     const maxIterations = Math.max(1000000, this._moves.length * 1024);
     try {
@@ -272,7 +317,21 @@ export class NethackGame {
       const message = String(error?.message || error || "");
       if (!message.includes("exit(0)")) throw error;
     }
+    this._refreshSessionFlags();
+  }
 
+  _refreshSessionFlags() {
+    const mod = this._module;
+    this._started =
+      hasExportedFunction(mod, "nhjs_started") &&
+      mod.ccall("nhjs_started", "number", [], []) !== 0;
+    this._inputExhausted =
+      hasExportedFunction(mod, "nhjs_input_exhausted") &&
+      mod.ccall("nhjs_input_exhausted", "number", [], []) !== 0;
+  }
+
+  _harvestCapturedScreens() {
+    const mod = this._module;
     const screenCount = mod.ccall("nhjs_get_screen_count", "number", [], []);
     const finalCursor = [
       mod.ccall("nhjs_get_cursor_col", "number", [], []),
@@ -282,7 +341,7 @@ export class NethackGame {
     const hasFrameCursors =
       typeof mod._nhjs_get_screen_cursor_col === "function" &&
       typeof mod._nhjs_get_screen_cursor_row === "function";
-    for (let i = 0; i < screenCount; i++) {
+    for (let i = this._rawScreenCount; i < screenCount; i++) {
       const screen = canonicalizeCapturedScreen(
         mod.ccall("nhjs_get_screen", "string", ["number"], [i]),
       );
@@ -308,8 +367,11 @@ export class NethackGame {
           : finalCursor,
       );
     }
-    correctNamePromptCapture(this._screens, this._cursors, this._moves);
+    this._rawScreenCount = screenCount;
+  }
 
+  _harvestCapturedAnimations() {
+    const mod = this._module;
     const animationCount =
       typeof mod._nhjs_get_animation_count === "function"
         ? mod.ccall("nhjs_get_animation_count", "number", [], [])
@@ -320,7 +382,7 @@ export class NethackGame {
     const hasAnimationIds =
       typeof mod._nhjs_get_animation_seq === "function" &&
       typeof mod._nhjs_get_animation_id === "function";
-    for (let i = 0; i < animationCount; i++) {
+    for (let i = this._rawAnimationCount; i < animationCount; i++) {
       this._animationFrames.push({
         screen: canonicalizeCapturedScreen(
           mod.ccall("nhjs_get_animation_screen", "string", ["number"], [i]),
@@ -350,18 +412,21 @@ export class NethackGame {
           : null,
       });
     }
+    this._rawAnimationCount = animationCount;
     this._animationFramesByStep = this._groupAnimationFramesByStep();
+  }
 
+  _harvestRngLog() {
+    const mod = this._module;
     try {
-      this._rngLog.push(
-        ...splitRngLog(mod.FS.readFile("/rng.log", { encoding: "utf8" })),
+      const lines = splitRngLog(
+        mod.FS.readFile("/rng.log", { encoding: "utf8" }),
       );
+      if (lines.length > this._rngLog.length)
+        this._rngLog.push(...lines.slice(this._rngLog.length));
     } catch {
       // A session can terminate before RNG logging is initialized.
     }
-    snapshotPersistentFs(mod.FS, this._storage);
-    if (this._pendingDisplay)
-      attachInteractiveDisplay(this, this._pendingDisplay);
   }
 
   getScreens() {
@@ -410,19 +475,35 @@ export async function runSegment(input) {
   return game;
 }
 
-export async function continueInteractiveGame(display, keyCode) {
-  const state = display?._nhjsInteractive;
-  if (!state) return false;
-  state.moves += String.fromCharCode(keyCode);
+async function replayInteractiveGame(display, state, moves) {
   const game = new NethackGame({
     seed: state.seed,
     datetime: state.datetime,
     nethackrc: state.nethackrc,
-    moves: state.moves,
+    moves,
     storage: state.storage,
   });
   await game.start();
-  state.game = game;
-  renderLatestCapturedScreen(game, display);
+  attachInteractiveDisplay(game, display);
   return true;
+}
+
+export async function continueInteractiveGame(display, keyCode) {
+  const state = display?._nhjsInteractive;
+  if (!state) return false;
+  const nextMoves = state.moves + String.fromCharCode(keyCode);
+  if (state.game?.canAcceptInteractiveKey?.()) {
+    try {
+      await state.game.pushKey(keyCode, {
+        harvestRng: false,
+        snapshotStorage: false,
+      });
+      state.moves = state.game._moves;
+      renderLatestCapturedScreen(state.game, display);
+      return true;
+    } catch (error) {
+      state.incrementalError = String(error?.message || error || "");
+    }
+  }
+  return replayInteractiveGame(display, state, nextMoves);
 }

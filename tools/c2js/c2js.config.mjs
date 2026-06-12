@@ -51,7 +51,7 @@ export const jsOnlyEngineFlags = [
   "-sALLOW_MEMORY_GROWTH=1",
   "-sEXIT_RUNTIME=0",
   "-sINVOKE_RUN=0",
-  "-sEXPORTED_FUNCTIONS=_nh_c2js_link_smoke,_nhjs_set_seed,_nhjs_session_init,_nhjs_session_run,_nhjs_get_screen_count,_nhjs_get_screen,_nhjs_get_screen_cursor_col,_nhjs_get_screen_cursor_row,_nhjs_get_animation_count,_nhjs_get_animation_screen,_nhjs_get_animation_cursor_col,_nhjs_get_animation_cursor_row,_nhjs_get_animation_seq,_nhjs_get_animation_id,_nhjs_get_cursor_col,_nhjs_get_cursor_row,_nhjs_input_exhausted,_nhjs_started,_nhjs_rng_log_path,_nhjs_debug_phase",
+  "-sEXPORTED_FUNCTIONS=_nh_c2js_link_smoke,_nhjs_set_seed,_nhjs_session_init,_nhjs_session_push_key,_nhjs_session_run,_nhjs_get_screen_count,_nhjs_get_screen,_nhjs_get_screen_cursor_col,_nhjs_get_screen_cursor_row,_nhjs_get_animation_count,_nhjs_get_animation_screen,_nhjs_get_animation_cursor_col,_nhjs_get_animation_cursor_row,_nhjs_get_animation_seq,_nhjs_get_animation_id,_nhjs_get_cursor_col,_nhjs_get_cursor_row,_nhjs_input_exhausted,_nhjs_started,_nhjs_rng_log_path,_nhjs_debug_phase",
   "-sEXPORTED_RUNTIME_METHODS=ccall,FS,UTF8ToString",
 ];
 

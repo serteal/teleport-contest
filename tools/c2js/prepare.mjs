@@ -193,6 +193,51 @@ extern void nomux_capture_write_input_boundary(void);
       );
     writeFileSync(allmainPath, allmain);
   }
+  if (!allmain.includes("c2js exposes moveloop_finish_after_rhack")) {
+    const rhackTail = `    if (u.utotype)       /* change dungeon level */
+        deferred_goto(); /* after rhack() */
+
+    if (gv.vision_full_recalc)
+        vision_recalc(0); /* vision! */
+#ifdef CLIPPING
+    /* after rhack() and vision_recalc() so that the map is redrawn
+       once with correct vision data, not twice (overshoot+correct) */
+    cliparound(u.ux, u.uy);
+#endif
+    /* when running in non-tport mode, this gets done through domove() */
+    if ((!svc.context.run || flags.runmode == RUN_TPORT)
+        && (gm.multi && (!svc.context.travel ? !(gm.multi % 7)
+                        : !(svm.moves % 7L)))) {
+        if (flags.time && svc.context.run)
+            disp.botl = TRUE;
+        /* [should this be flush_screen() instead?] */
+        display_nhwindow(WIN_MAP, FALSE);
+    }
+
+    if (gl.luacore && nhcb_counts[NHCB_END_TURN]) {
+        lua_getglobal(gl.luacore, "nh_callback_run");
+        lua_pushstring(gl.luacore, nhcb_name[NHCB_END_TURN]);
+        nhl_pcall_handle(gl.luacore, 1, 0, "moveloop_core", NHLpa_panic);
+        lua_settop(gl.luacore, 0);
+    }`;
+    allmain = allmain.replace(
+      rhackTail,
+      "    moveloop_finish_after_rhack();",
+    );
+    allmain = allmain.replace(
+      "void\nmoveloop_core(void)\n{",
+      `void
+moveloop_finish_after_rhack(void) /* c2js exposes moveloop_finish_after_rhack */
+{
+${rhackTail}
+}
+
+void
+moveloop_core(void)
+{`,
+    );
+    writeFileSync(allmainPath, allmain);
+  }
 
   const eatPath = join(preparedSourceDir, "src/eat.c");
   let eat = readFileSync(eatPath, "utf8");
@@ -1197,6 +1242,7 @@ export function prepareSource() {
           "capture NOMUX input-boundary frames into exported in-memory arrays",
           "mirror emitted termcap color/attribute state in NOMUX capture",
           "export moveloop_preamble so the c2js driver can step moveloop_core",
+          "export moveloop_finish_after_rhack so interactive input can resume pending command boundaries",
           "enable macOS apple/pear message parity without enabling full MACOS platform headers",
         ],
         hackSources,

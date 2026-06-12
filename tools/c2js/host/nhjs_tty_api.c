@@ -22,12 +22,14 @@
 
 extern void rng_log_init(void);
 extern void moveloop_preamble(boolean);
+extern void moveloop_finish_after_rhack(void);
 extern void nhjs_set_seed(unsigned long seed);
 extern void nhjs_set_seed_text(const char *seed_text);
 extern void nhjs_install_data_files(void);
 extern boolean whoami(void);
 extern NHFILE *restore_saved_game(void);
 extern int dorecover(NHFILE *);
+extern void rhack(int);
 
 char erase_char = '\177';
 char intr_char = '\003';
@@ -49,6 +51,8 @@ struct nhjs_capture_frame {
 
 static char *nhjs_moves;
 static char *nhjs_moves_next;
+static size_t nhjs_moves_len;
+static size_t nhjs_moves_capacity;
 static char *nhjs_datetime;
 static char *nhjs_rc;
 static char *nhjs_seed_text;
@@ -61,6 +65,8 @@ static int nhjs_animation_capacity;
 static int nhjs_expected_screen_count;
 static int nhjs_cursor_col;
 static int nhjs_cursor_row;
+static boolean nhjs_skip_next_input_capture;
+static boolean nhjs_pending_command_input;
 
 static void
 nhjs_stop_session(void)
@@ -86,6 +92,33 @@ nhjs_strdup_or_empty(const char *s)
         return (char *) 0;
     memcpy(copy, s, len + 1);
     return copy;
+}
+
+static boolean
+nhjs_ensure_moves_capacity(size_t capacity)
+{
+    char *new_moves;
+    size_t next_offset = 0;
+    size_t new_capacity;
+
+    if (nhjs_moves_capacity >= capacity)
+        return TRUE;
+
+    if (nhjs_moves && nhjs_moves_next)
+        next_offset = (size_t) (nhjs_moves_next - nhjs_moves);
+
+    new_capacity = nhjs_moves_capacity ? nhjs_moves_capacity : 16;
+    while (new_capacity < capacity)
+        new_capacity *= 2;
+
+    new_moves = (char *) realloc(nhjs_moves, new_capacity);
+    if (!new_moves)
+        return FALSE;
+
+    nhjs_moves = new_moves;
+    nhjs_moves_capacity = new_capacity;
+    nhjs_moves_next = nhjs_moves + next_offset;
+    return TRUE;
 }
 
 static struct nhjs_capture_frame *
@@ -343,6 +376,9 @@ nhjs_next_input(void)
     unsigned char ch;
 
     if (!nhjs_moves_next || !*nhjs_moves_next) {
+        nhjs_skip_next_input_capture = TRUE;
+        if (nhjs_game_started)
+            nhjs_pending_command_input = TRUE;
         nhjs_stop_session();
         return '\033';
     }
@@ -384,6 +420,12 @@ nhjs_tty_capture_boundary(const char *kind, int seq, int anim, int cx, int cy,
     }
     if (strcmp(kind, "input"))
         return;
+    if (nhjs_skip_next_input_capture) {
+        nhjs_skip_next_input_capture = FALSE;
+        nhjs_cursor_col = cx;
+        nhjs_cursor_row = cy;
+        return;
+    }
     if (nhjs_expected_screen_count > 0
         && nhjs_screen_count >= nhjs_expected_screen_count) {
         nhjs_cursor_col = cx;
@@ -616,6 +658,8 @@ nhjs_session_init(const char *seed_text, const char *datetime,
     free(nhjs_seed_text);
     nhjs_free_screens();
     nhjs_moves = nhjs_strdup_or_empty(moves);
+    nhjs_moves_len = nhjs_moves ? strlen(nhjs_moves) : 0;
+    nhjs_moves_capacity = nhjs_moves_len + 1;
     nhjs_datetime = nhjs_strdup_or_empty(datetime);
     nhjs_rc = nhjs_strdup_or_empty(nethackrc);
     nhjs_seed_text = nhjs_strdup_or_empty(seed_text);
@@ -624,10 +668,40 @@ nhjs_session_init(const char *seed_text, const char *datetime,
     nhjs_game_started = FALSE;
     nhjs_input_exhausted_flag = FALSE;
     nhjs_jump_active = FALSE;
+    nhjs_skip_next_input_capture = FALSE;
+    nhjs_pending_command_input = FALSE;
     nhjs_phase = 0;
     nhjs_cursor_col = 0;
     nhjs_cursor_row = 0;
     nhjs_set_seed_text(nhjs_seed_text);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void
+nhjs_session_push_key(int key)
+{
+    size_t next_offset;
+
+    if (!nhjs_moves) {
+        nhjs_moves_len = 0;
+        nhjs_moves_capacity = 0;
+        nhjs_moves_next = (char *) 0;
+    }
+
+    next_offset = (nhjs_moves && nhjs_moves_next)
+                  ? (size_t) (nhjs_moves_next - nhjs_moves)
+                  : nhjs_moves_len;
+    if (next_offset > nhjs_moves_len)
+        next_offset = nhjs_moves_len;
+
+    if (!nhjs_ensure_moves_capacity(nhjs_moves_len + 2))
+        return;
+
+    nhjs_moves[nhjs_moves_len++] = (char) (key & 0xff);
+    nhjs_moves[nhjs_moves_len] = '\0';
+    nhjs_moves_next = nhjs_moves + next_offset;
+    nhjs_expected_screen_count++;
+    nhjs_input_exhausted_flag = FALSE;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -645,6 +719,11 @@ nhjs_session_run(int max_iterations)
     }
     if (!nhjs_game_started)
         nhjs_start_game();
+    if (nhjs_pending_command_input && nhjs_moves_next && *nhjs_moves_next) {
+        nhjs_pending_command_input = FALSE;
+        rhack(0);
+        moveloop_finish_after_rhack();
+    }
     for (i = 0; i < max_iterations && !nhjs_input_exhausted_flag; ++i)
         moveloop_core();
     nhjs_jump_active = FALSE;

@@ -2,11 +2,12 @@
 //
 // Scoring enters through js/jsmain.js:runSegment().  The old hand-written
 // skeleton move loop has been removed; browser play delegates each key to the
-// generated C-to-JS engine by replaying the accumulated move string.
+// generated C-to-JS engine.  The engine advances incrementally when it is at a
+// normal command boundary, with replay as a fallback for startup prompts.
 
-import { game } from './gstate.js';
-import { KEY_BINDINGS } from './terminal.js';
-import { continueInteractiveGame } from './jsmain.js';
+import { game } from "./gstate.js";
+import { KEY_BINDINGS } from "./terminal.js";
+import { continueInteractiveGame } from "./jsmain.js";
 
 export async function newgame() {
   game.program_state = game.program_state || {};
@@ -18,7 +19,7 @@ export async function moveloop_core() {
   if (!display) return;
 
   if (!display._nhjsInteractive) {
-    display.putstr?.(0, 0, 'Interactive C-to-JS engine is not attached yet.');
+    display.putstr?.(0, 0, "Interactive C-to-JS engine is not attached yet.");
     game.program_state = game.program_state || {};
     game.program_state.gameover = false;
     return;
