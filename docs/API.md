@@ -158,7 +158,11 @@ specified — both your output and the recorded ground truth are
 canonicalized before comparison (see *Screen comparator* below).
 The provided `frozen/terminal.js` has a `serialize()` method that
 produces the canonical format directly from a 24×80 grid; the
-provided `js/jsmain.js` capture hook calls it for you.
+provided `js/jsmain.js` capture hook calls it for you. (Before
+October 26, 2026 it dropped the inverse video or underline on a row's
+leading blanks, as in some menu headings; see
+[issue #18](https://github.com/davidbau/teleport-contest/issues/18).
+A port that works around that with its own serializer can keep it.)
 
 If you implement your own terminal, output anything that — after
 canonicalization — matches the recorded screen.

@@ -23,6 +23,7 @@ import { readFileSync, readdirSync, existsSync, statSync, writeFileSync, mkdirSy
 import { join, basename, dirname } from 'path';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { performance } from 'node:perf_hooks';
 import { decodeScreen, diffCell, ROWS_24, COLS_80 } from './screen-decode.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -37,6 +38,23 @@ function isRngCall(entry) {
 
 function extractRngCalls(rngArray) {
     return (rngArray || []).filter(isRngCall);
+}
+
+// Append every element of `src` into `dst` without exceeding V8's
+// spread-argument limit. `dst.push(...src)` and `Function.prototype.apply`
+// both pass each element as a separate function argument; on V8/Node
+// that throws RangeError: Maximum call stack size exceeded once
+// src.length is roughly above 1<<16. Session RNG logs routinely
+// exceed that, so a naive spread turns a partial-credit divergence
+// into a full zero-session error in the scorer (contest issue #8).
+// Chunk the spread well below the boundary instead — measurably
+// faster than a plain for-of loop and avoids the RangeError entirely.
+function pushAll(dst, src) {
+    if (!src || !src.length) return;
+    const CHUNK = 0x8000;
+    for (let i = 0; i < src.length; i += CHUNK) {
+        dst.push(...src.slice(i, i + CHUNK));
+    }
 }
 
 // Strip caller annotations and JS index prefix so plain "rn2(N)=M"
@@ -278,7 +296,7 @@ async function runSession(sessionPath) {
     const cAnimByStep = [];
     for (const seg of segments) {
         for (const step of seg.steps || []) {
-            cRng.push(...extractRngCalls(step.rng));
+            pushAll(cRng, extractRngCalls(step.rng));
             if (step.screen) {
                 cScreens.push(step.screen);
                 cCursors.push(Array.isArray(step.cursor) ? step.cursor : null);
@@ -310,24 +328,28 @@ async function runSession(sessionPath) {
     let jsCursors = [];
     let lastGame = null;
     let jsError = null;
+    let totalMoves = 0;
+    const t_runSegmentStart = performance.now();
     try {
         for (const seg of segments) {
             const input = { ...replayInputFor(seg), storage: storageHandle };
+            totalMoves += (input.moves || '').length;
             const segGame = await runSegment(input);
             const segRng = (segGame.getRngLog?.() || []).map(e =>
                 typeof e === 'string' ? e.replace(/^\d+\s+/, '') : String(e)
             ).filter(isRngCall);
-            jsRng.push(...segRng);
-            jsScreens.push(...(segGame.getScreens?.() || []));
-            jsCursors.push(...(segGame.getCursors?.() || []));
+            pushAll(jsRng, segRng);
+            pushAll(jsScreens, segGame.getScreens?.() || []);
+            pushAll(jsCursors, segGame.getCursors?.() || []);
             if (typeof segGame.getAnimationFramesByStep === 'function') {
-                jsAnimByStep.push(...segGame.getAnimationFramesByStep());
+                pushAll(jsAnimByStep, segGame.getAnimationFramesByStep());
             }
             lastGame = segGame;
         }
     } catch (e) {
         jsError = e.message;
     }
+    const totalSegmentMs = performance.now() - t_runSegmentStart;
     const game = lastGame;
 
     const rngTotal = cRng.length;
@@ -389,6 +411,11 @@ async function runSession(sessionPath) {
             animFrames: { matched: animMatched, total: animTotal },
         },
         error: jsError,
+        // Speed instrumentation: wall-clock around the runSegment loop
+        // for this session, plus the total moves across all segments.
+        // The bundle-level `speed` linear fit (a + b * moves) is derived
+        // from these.
+        time: { ms: +totalSegmentMs.toFixed(2), moves: totalMoves },
     };
 }
 
@@ -492,7 +519,46 @@ async function main() {
         commit = execSync('git rev-parse --short HEAD', { cwd: PROJECT_ROOT }).toString().trim();
     } catch (_) { /* not a git checkout */ }
 
-    const bundle = { timestamp: new Date().toISOString(), commit, results };
+    // Linear fit on (moves, time_ms) per session: total_ms = a + b * moves.
+    // `a` is the per-session startup constant the contestant pays before
+    // any move is processed (module init, WASM instantiation, prng seed,
+    // etc.); `b` is the marginal cost per move. We OLS-fit across all
+    // sessions that actually executed (had a non-zero recorded time).
+    const speed = (() => {
+        const points = results
+            .filter(r => r.time && r.time.moves >= 0 && r.time.ms >= 0)
+            .map(r => [r.time.moves, r.time.ms]);
+        if (points.length < 2) {
+            return { startup_ms: 0, per_move_ms: 0, r2: 0, label: '?',
+                     sessions: points.length };
+        }
+        const n = points.length;
+        const mx = points.reduce((s, p) => s + p[0], 0) / n;
+        const my = points.reduce((s, p) => s + p[1], 0) / n;
+        let num = 0, den = 0;
+        for (const [x, y] of points) {
+            num += (x - mx) * (y - my);
+            den += (x - mx) ** 2;
+        }
+        const b = den ? num / den : 0;
+        const a = my - b * mx;
+        let ss_res = 0, ss_tot = 0;
+        for (const [x, y] of points) {
+            ss_res += (y - (a + b * x)) ** 2;
+            ss_tot += (y - my) ** 2;
+        }
+        const r2 = ss_tot ? 1 - ss_res / ss_tot : 0;
+        return {
+            startup_ms: +a.toFixed(1),
+            per_move_ms: +b.toFixed(4),
+            r2: +r2.toFixed(3),
+            label: `${Math.round(a)}+${b.toFixed(2)}/turn`,
+            sessions: n,
+        };
+    })();
+    process.stderr.write(`  speed: ${speed.label} (R² = ${speed.r2})\n`);
+
+    const bundle = { timestamp: new Date().toISOString(), commit, speed, results };
     console.log('__RESULTS_JSON__');
     console.log(JSON.stringify(bundle));
 

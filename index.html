@@ -391,9 +391,24 @@ async function main() {
     nhGame._pendingDisplay = display;
     game.nhDisplay = display;
 
-    // Wire toolbar.
-    const saveBtn = document.getElementById('save-btn');
-    if (saveBtn) saveBtn.addEventListener('click', () => {
+    // Wire toolbar. The terminal installs its keydown handler on
+    // `document`, so any button that holds focus also receives those
+    // keys — and <button>s activate on Space/Enter by default. That
+    // turns the next Space after a save click into a second save
+    // click. We defang both halves: preventDefault on mousedown so
+    // clicking a button never shifts focus away from the page, and
+    // an explicit blur() in the click handler in case the focus did
+    // shift (touch, keyboard activation, etc.).
+    function wireToolbarButton(btn, onActivate) {
+        if (!btn) return;
+        btn.addEventListener('mousedown', (e) => e.preventDefault());
+        btn.addEventListener('click', (e) => {
+            try { btn.blur(); } catch (_) { /* noop */ }
+            onActivate(e);
+        });
+    }
+
+    wireToolbarButton(document.getElementById('save-btn'), () => {
         // Send NetHack's save & quit command. Works for forks that
         // implement dosave; silently does nothing for forks that don't.
         // Capital S triggers dosave, then 'y' confirms.
@@ -401,17 +416,18 @@ async function main() {
         display.pushKey('y'.charCodeAt(0));
     });
 
-    const newBtn = document.getElementById('new-game-btn');
-    if (newBtn) newBtn.addEventListener('click', () => location.reload());
+    wireToolbarButton(document.getElementById('new-game-btn'),
+                      () => location.reload());
 
-    const clearBtn = document.getElementById('clear-saves-btn');
-    if (clearBtn) clearBtn.addEventListener('click', () => {
+    wireToolbarButton(document.getElementById('clear-saves-btn'), () => {
+        if (!confirm('Delete this fork\'s saved games from your browser? '
+                     + 'Any in-progress save will be lost.')) return;
         const n = clearSavesForThisFork();
         alert(`Removed ${n} VFS entries for this fork.`);
     });
 
-    const playAgainBtn = document.getElementById('play-again-btn');
-    if (playAgainBtn) playAgainBtn.addEventListener('click', () => location.reload());
+    wireToolbarButton(document.getElementById('play-again-btn'),
+                      () => location.reload());
 
     await nhGame.start();
 

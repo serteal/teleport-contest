@@ -624,7 +624,8 @@ span.terminal-cursor {
      * Serialize the visible terminal grid to a single string, in a form
      * comparable to a tty's wire output: rows separated by newlines,
      * leading whitespace compressed to "\x1b[NC" (cursor-forward) when
-     * runs exceed 4, trailing empty cells dropped, trailing empty rows
+     * runs exceed 4 (blanks in inverse video or underline are not
+     * whitespace), trailing empty cells dropped, trailing empty rows
      * dropped. This is the contest fixture for screen scoring — judges
      * compare exactly this string against the C-recorded screen for
      * each input boundary.
@@ -676,9 +677,13 @@ span.terminal-cursor {
                 if (this.grid[r][c].ch !== ' ') { lastCol = c; break; }
             }
             if (lastCol < 0) { if (r < lastRow) out += '\n'; continue; }
+            // A leading blank in inverse video or underline is visible, so
+            // the row starts there and its attributes are emitted, as in
+            // the C recordings (teleport-contest issue #18).
             let firstCol = 0;
             for (let c = 0; c <= lastCol; c++) {
-                if (this.grid[r][c].ch !== ' ') { firstCol = c; break; }
+                const cell = this.grid[r][c];
+                if (cell.ch !== ' ' || (cell.attr & 5)) { firstCol = c; break; }
             }
             if (firstCol > 4) out += `\x1b[${firstCol}C`;
             else if (firstCol > 0) out += ' '.repeat(firstCol);
