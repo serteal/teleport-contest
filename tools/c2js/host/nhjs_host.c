@@ -1,181 +1,83 @@
+/* nhjs_host.c - the Unix port routines that the port does not take from
+ * sys/unix/unixunix.c and sys/share/unixtty.c, which assume a real
+ * terminal, fork() and signals.  sys/unix/unixmain.c itself is compiled
+ * unchanged (with main renamed to nhjs_unix_main). */
+
 #include "hack.h"
 
-#include <emscripten/emscripten.h>
+#include <regex.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-static unsigned long nhjs_seed;
-static unsigned char nhjs_seed_bytes[8];
-
-static void
-nhjs_store_seed64(unsigned long long seed)
+/* sysconf SHELLERS gate shared by '!' and ^Z, as in dosh() and dosuspend() */
+static boolean
+nhjs_shell_allowed(void)
 {
-    int i;
-
-    nhjs_seed = (unsigned long) seed;
-    for (i = 0; i < 8; ++i) {
-        nhjs_seed_bytes[i] = (unsigned char) (seed & 0xFFu);
-        seed >>= 8;
-    }
+    return sysopt.shellers && sysopt.shellers[0]
+           && check_user_string(sysopt.shellers);
 }
 
-EMSCRIPTEN_KEEPALIVE
-void
-nhjs_set_seed(unsigned long seed)
-{
-    nhjs_store_seed64((unsigned long long) seed);
-}
-
-void
-nhjs_set_seed_text(const char *seed_text)
-{
-    char *end = (char *) 0;
-    unsigned long long seed = 0ULL;
-
-    if (seed_text && *seed_text)
-        seed = strtoull(seed_text, &end, 10);
-    nhjs_store_seed64(seed);
-}
-
-int
-nhjs_get_seed_bytes(unsigned char *out, int max)
-{
-    int i, n = max < 8 ? max : 8;
-
-    if (!out || max <= 0)
-        return 0;
-    for (i = 0; i < n; ++i)
-        out[i] = nhjs_seed_bytes[i];
-    return 8;
-}
-
-EMSCRIPTEN_KEEPALIVE
-int
-nh_c2js_link_smoke(void)
-{
-    return 5000;
-}
-
-boolean
-whoami(void)
-{
-    if (!*svp.plname)
-        Strcpy(svp.plname, "Hero");
-    gp.plnamelen = 0;
-    return FALSE;
-}
-
-void
-sethanguphandler(void (*handler)(int))
-{
-    (void) handler;
-}
-
-boolean
-check_user_string(const char *optstr)
-{
-    int pwlen;
-    const char *eop, *w;
-    const char *pwname = svp.plname;
-
-    if (optstr[0] == '*')
-        return TRUE;
-    if (!pwname || !*pwname)
-        return FALSE;
-    pwlen = (int) strlen(pwname);
-    eop = eos((char *) optstr);
-    w = optstr;
-    while (w + pwlen <= eop) {
-        if (!*w)
-            break;
-        if (isspace(*w)) {
-            w++;
-            continue;
-        }
-        if (!strncmp(w, pwname, pwlen)) {
-            if (!w[pwlen] || isspace(w[pwlen]))
-                return TRUE;
-        }
-        while (*w && !isspace(*w))
-            w++;
-    }
-    return FALSE;
-}
-
-boolean
-authorize_wizard_mode(void)
-{
-    if (sysopt.wizards && sysopt.wizards[0]) {
-        if (check_user_string(sysopt.wizards))
-            return TRUE;
-    }
-    iflags.wiz_error_flag = TRUE;
-    return FALSE;
-}
-
-boolean
-authorize_explore_mode(void)
-{
-#ifdef SYSCF
-    if (sysopt.explorers && sysopt.explorers[0]) {
-        if (check_user_string(sysopt.explorers))
-            return TRUE;
-    }
-    iflags.explore_error_flag = TRUE;
-    return FALSE;
-#else
-    return TRUE;
-#endif
-}
-
-unsigned long
-sys_random_seed(void)
-{
-    return nhjs_seed;
-}
-
-void
-get_nhuuid(void)
-{
-}
-
-void
-free_nhuuid(void)
-{
-    int i;
-
-    for (i = 0; i < SIZE(svn.nhuuid); ++i)
-        svn.nhuuid[i] = 0;
-}
-
+/* '!': instead of running a shell, the tty is suspended and then redrawn,
+   as when the shell exits (child(0)). */
 int
 dosh(void)
 {
+    if (!nhjs_shell_allowed()) {
+        Norep("Unavailable command '!'.");
+        return 0;
+    }
+    suspend_nhwindows((char *) 0);
+    resume_nhwindows();
     return 0;
 }
 
+/* ^Z: suspend, then resume and redraw (ioctl.c dosuspend()) */
 int
 dosuspend(void)
 {
+    if (!nhjs_shell_allowed()) {
+        Norep("Suspend command not available.");
+        return 0;
+    }
+    suspend_nhwindows((char *) 0);
+    resume_nhwindows();
     return 0;
 }
 
 #ifndef CRASHREPORT
+/* #bugreport (see src/cmd.c): no browser can be launched for the report */
 int
 dobugreport(void)
 {
+    pline("Unable to send bug report.  Please visit %s instead.",
+          (sysopt.crashreporturl && *sysopt.crashreporturl)
+              ? sysopt.crashreporturl
+              : DEVTEAM_URL);
     return ECMD_OK;
 }
 #endif
 
+/* The parent side of unixunix.c child(): the windows are suspended (blank
+   screen), the child process (the mail reader of readmail()) prints
+   outside the capture and exits, and with `wt' the parent waits for a key
+   before redrawing.  wait_synch() -> getret() -> xwaitforspace(), in
+   cbreak mode (see settty()), accepts CR, LF, space and ESC and beeps at
+   (and consumes) any other key.  The child's own return of 1 never
+   happens here: the fork always "succeeds" and only the parent goes on. */
 int
 child(int wt)
 {
-    (void) wt;
+    suspend_nhwindows((char *) 0);
+    if (wt) {
+        raw_print("");
+        wait_synch();
+    }
+    resume_nhwindows();
     return 0;
 }
 
+/* unixtty.c: these only change the (absent) terminal's interrupt key */
 void
 intron(void)
 {
@@ -186,6 +88,7 @@ introff(void)
 {
 }
 
+/* normalize file name - we don't like .'s, /'s, spaces (unixunix.c) */
 void
 regularize(char *s)
 {
@@ -196,21 +99,91 @@ regularize(char *s)
         *lp = '_';
 }
 
-#ifndef TTY_GRAPHICS
+/* caller couldn't find a regular save file but did find a panic one
+   (unixunix.c) */
 void
-nomux_capture_write_input_boundary(void)
+ask_about_panic_save(void)
 {
-}
-#endif
+    static const char Instead_prompt[] = "Start a new game instead?";
+    int c = '\0';
 
+    pline("There is no regular save file but there is a panic one.");
+    pline("It might be recoverable with demi-divine intervention.");
+    if (iflags.window_inited)
+        c = yn_function(Instead_prompt, "yn\033q", 'n', FALSE);
+    if (c != 'y') {
+        delete_levelfile(0);
+        unlock_file(HLOCK);
+        if (iflags.window_inited)
+            exit_nhwindows((char *) 0);
+        nh_terminate(EXIT_SUCCESS);
+    }
+}
+
+/* regerror() with the messages of Henry Spencer's regex package (BSD
+   licence), lib/libc/regex/regerror.c.  Codes 1-13 are those of the
+   port's <regex.h>; 14-18 are the package's own. */
+size_t
+nhjs_regerror(int errcode, const regex_t *preg, char *errbuf,
+              size_t errbuf_size)
+{
+    static const struct {
+        int code;
+        const char *explain;
+    } rerrs[] = {
+        { REG_NOMATCH, "regexec() failed to match" },
+        { REG_BADPAT, "invalid regular expression" },
+        { REG_ECOLLATE, "invalid collating element" },
+        { REG_ECTYPE, "invalid character class" },
+        { REG_EESCAPE, "trailing backslash (\\)" },
+        { REG_ESUBREG, "invalid backreference number" },
+        { REG_EBRACK, "brackets ([ ]) not balanced" },
+        { REG_EPAREN, "parentheses not balanced" },
+        { REG_EBRACE, "braces not balanced" },
+        { REG_BADBR, "invalid repetition count(s)" },
+        { REG_ERANGE, "invalid character range" },
+        { REG_ESPACE, "out of memory" },
+        { REG_BADRPT, "repetition-operator operand invalid" },
+        /* codes beyond <regex.h>; the port's regcomp (js/host/regex.js)
+           returns 14 and 18 */
+        { 14, "empty (sub)expression" },             /* REG_EMPTY */
+        { 15, "\"can't happen\" -- you found a bug" }, /* REG_ASSERT */
+        { 16, "invalid argument to regex routine" }, /* REG_INVARG */
+        { 17, "illegal byte sequence" },             /* REG_ILLSEQ */
+        { 18, "maximum repetition exceeds 255" },    /* REG_BADMAX */
+    };
+    const char *s = "*** unknown regexp error code ***";
+    size_t i, len;
+
+    (void) preg;
+    for (i = 0; i < SIZE(rerrs); ++i)
+        if (rerrs[i].code == errcode) {
+            s = rerrs[i].explain;
+            break;
+        }
+    len = strlen(s) + 1;
+    if (errbuf_size > 0) {
+        if (errbuf_size > len) {
+            (void) strcpy(errbuf, s);
+        } else {
+            (void) strncpy(errbuf, s, errbuf_size - 1);
+            errbuf[errbuf_size - 1] = '\0';
+        }
+    }
+    return len;
+}
+
+/* fatal error (unixtty.c) */
 ATTRNORETURN void
 error(const char *s, ...)
 {
     va_list ap;
 
     va_start(ap, s);
-    vfprintf(stderr, s, ap);
+    if (iflags.window_inited)
+        exit_nhwindows((char *) 0);
+    vprintf(s, ap);
+    (void) putchar('\n');
     va_end(ap);
-    fputc('\n', stderr);
-    abort();
+    exit(EXIT_FAILURE);
 }

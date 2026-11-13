@@ -1,79 +1,42 @@
 #!/usr/bin/env node
-import {
-  cacheRoot,
-  deterministicPatches,
-  generatedDir,
-  hostDir,
-  jsOnlyEngineFlags,
-  jsOnlyProbeFlags,
-  patchDir,
-  preparedSourceDir,
-  projectRoot,
-  upstreamDir,
-} from "./c2js.config.mjs";
-import {
-  compileCore,
-  compileLua,
-  compilePortObjects,
-  compileSmoke,
-} from "./compile.mjs";
-import { configureSource, prepareSource } from "./prepare.mjs";
-import { linkEngine, updateGenerated } from "./link.mjs";
-import { runProbe } from "./verify.mjs";
+// Command line of the C preparation: the NetHack source tree that tools/nh2js turns into js/.
 
-function usage() {
-  console.log(`Usage:
-  node tools/c2js/build-engine.mjs --probe
+import {
+  cacheRoot, nethackPatches, patchDir, preparedSourceDir, projectRoot, upstreamDir,
+} from "./c2js.config.mjs";
+import { configureSource } from "./configure.mjs";
+import { prepareSource } from "./prepare.mjs";
+
+const usage = `Usage:
   node tools/c2js/build-engine.mjs --prepare-source
   node tools/c2js/build-engine.mjs --configure
-  node tools/c2js/build-engine.mjs --compile-smoke
-  node tools/c2js/build-engine.mjs --compile-core
-  node tools/c2js/build-engine.mjs --compile-lua
-  node tools/c2js/build-engine.mjs --compile-port
-  node tools/c2js/build-engine.mjs --link-engine
-  node tools/c2js/build-engine.mjs --update-generated
   node tools/c2js/build-engine.mjs --print-config
 
-This script is the CLI dispatcher for the reproducible plain-JS C-to-JS
-engine pipeline. Source transforms, compilation, linking, and verification live
-in focused sibling modules under tools/c2js/.`);
-}
+--prepare-source  copies nethack-c/upstream into the cache and applies nethack-c/patches, the
+                  port patches (tools/c2js/patches) and the 64-bit long rewrite (long64.mjs)
+--configure       prepares the tree as above, then generates NetHack's headers and data files
+                  and the record sizes of wizard-mode #stats (struct-sizes.mjs)
+--print-config    shows the paths in use (see c2js.config.mjs for the environment variables)`;
 
 function printConfig() {
-  console.log(
-    JSON.stringify(
-      {
-        projectRoot,
-        upstreamDir,
-        patchDir,
-        cacheRoot,
-        preparedSourceDir,
-        generatedDir,
-        hostDir,
-        deterministicPatches,
-        jsOnlyProbeFlags,
-        jsOnlyEngineFlags,
-      },
-      null,
-      2,
-    ),
-  );
+  const config = { projectRoot, upstreamDir, patchDir, cacheRoot, preparedSourceDir, nethackPatches };
+  console.log(JSON.stringify(config, null, 2));
 }
 
-const args = new Set(process.argv.slice(2));
-try {
-  if (args.has("--probe")) runProbe();
-  else if (args.has("--prepare-source")) prepareSource();
-  else if (args.has("--configure")) configureSource();
-  else if (args.has("--compile-smoke")) compileSmoke();
-  else if (args.has("--compile-core")) compileCore();
-  else if (args.has("--compile-lua")) compileLua();
-  else if (args.has("--compile-port")) compilePortObjects();
-  else if (args.has("--link-engine")) linkEngine();
-  else if (args.has("--update-generated")) updateGenerated();
-  else if (args.has("--print-config")) printConfig();
-  else usage();
-} catch (error) {
-  console.error(`c2js: ${error.message}`);
-  process.exit(1);
+const commands = {
+  "--prepare-source": prepareSource,
+  "--configure": configureSource,
+  "--print-config": printConfig,
+};
+
+const command = commands[process.argv[2]];
+if (!command) {
+  console.log(usage);
+} else {
+  try {
+    command();
+  } catch (error) {
+    console.error(`c2js: ${error.message}`);
+    process.exit(1);
+  }
 }
