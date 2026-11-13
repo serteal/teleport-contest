@@ -1,0 +1,2683 @@
+/* NetHack 5.0	mhitu.c	$NHDT-Date: 1775259433 2026/04/03 15:37:13 $  $NHDT-Branch: NetHack-3.7 $:$NHDT-Revision: 1.341 $ */
+/* Copyright (c) Stichting Mathematisch Centrum, Amsterdam, 1985. */
+/*-Copyright (c) Robert Patrick Rankin, 2012. */
+/* NetHack may be freely redistributed.  See license for details. */
+
+const mon_currwep = static_var("mon_currwep", ptr_to(struct_obj), null);
+
+export function ld() { return +((yyyymmdd(0) - (getyear() * 10000)) == 0xe5); }
+
+/* monster hits hero (most callers have been moved to uthim.c) */
+export function hitmsg(mtmp, mattk) { /* void */
+    let compat;
+    let verb = 0, again, punct = _("!");
+    let Monst_name = Monnam(mtmp);
+
+    /* Note: if opposite gender, "seductively";
+       if same gender, "engagingly" for nymph, normal msg for others. */
+    if ((compat = could_seduce(mtmp, gy.youmonst, mattk)) != 0
+        && !mtmp.mcan && !mtmp.mspec_used) {
+        pline_mon(mtmp, _("%s %s you %s."), Monst_name,
+              !Blind() ? _("smiles at") : !Deaf() ? _("talks to") : _("touches"),
+              (compat == 2) ? _("engagingly") : _("seductively"));
+    } else {
+        switch (mattk.aatyp) {
+        case AT_BITE:
+            verb = _("bites");
+            break;
+        case AT_KICK:
+            if (thick_skinned(gy.youmonst.data))
+                punct = _(".");
+            verb = _("kicks");
+            break;
+        case AT_STNG:
+            verb = _("stings");
+            break;
+        case AT_BUTT:
+            verb = _("butts");
+            break;
+        case AT_TUCH:
+            verb = _("touches you");
+            break;
+        case AT_TENT:
+            verb = _("tentacles suck your brain");
+            Monst_name = s_suffix(Monst_name);
+            break;
+        case AT_EXPL:
+        case AT_BOOM:
+            verb = _("explodes");
+            break;
+        default:
+            verb = _("hits");
+        }
+        /* if a monster hits more than once with similar attack, say so */
+        again = (mtmp.m_id == gh.hitmsg_mid
+                 && gh.hitmsg_prev != null
+                 && mattk == ptr_add(gh.hitmsg_prev, 1)
+                 && mattk.aatyp == gh.hitmsg_prev.aatyp) ? _(" again") : _("");
+        pline_mon(mtmp, _("%s %s%s%s"), Monst_name, verb, again, punct);
+    }
+    gh.hitmsg_mid = mtmp.m_id;
+    gh.hitmsg_prev = mattk;
+}
+
+/* monster missed you */
+function missmu(mtmp, nearmiss, mattk) { /* void */
+    gh.hitmsg_mid = 0;
+    gh.hitmsg_prev = null;
+
+    if (!canspotmon(mtmp))
+        map_invisible(mtmp.mx, mtmp.my);
+
+    if (could_seduce(mtmp, gy.youmonst, mattk) && !mtmp.mcan)
+        pline_mon(mtmp, _("%s pretends to be friendly."), Monnam(mtmp));
+    else
+        pline_mon(mtmp, _("%s %smisses!"), Monnam(mtmp),
+                  (nearmiss && flags.verbose) ? _("just ") : _(""));
+
+    stop_occupation();
+}
+
+/* strike types P|S|B: Pierce (pointed: stab) => "thrusts",
+   Slash (edged: slice) or whack (blunt: Bash) => "swings" */
+export function mswings_verb(
+    mwep,
+    bash) { /* const char * */ /* True: using polearm while too close */
+    let verb;
+    let otyp = mwep.otyp,
+
+        lash = +(objects[otyp].oc_subtyp == P_WHIP || is_wet_towel(mwep)),
+
+        thrust = +((objects[otyp].oc_dir & PIERCE) != 0
+                  && ((objects[otyp].oc_dir & ~PIERCE) == 0 || !rn2(2)));
+
+    verb = bash ? _("bashes with") /*sigh*/
+           : lash ? _("lashes")
+             : thrust ? _("thrusts")
+               : _("swings");
+    /* (might have caller also pass attacker's formatted name so that
+       if hallucination makes that be plural, we could use vtense() to
+       adjust the result to match) */
+    return verb;
+}
+
+/* monster swings obj */
+function mswings(
+    mtmp,
+    otemp,
+    bash) { /* void */ /* True: polearm used at too close range */
+    if (flags.verbose && !Blind() && mon_visible(mtmp)) {
+        pline_mon(mtmp, _("%s %s %s%s %s."), Monnam(mtmp),
+                  mswings_verb(otemp, bash),
+                  (otemp.quan > 1) ? _("one of ") : _(""),
+                  mhis(mtmp), xname(otemp));
+    }
+}
+
+/* return how a poison attack was delivered */
+export function mpoisons_subj(
+    mtmp,
+    mattk) { /* const char * */
+    if (mattk.aatyp == AT_WEAP) {
+        let mwep = (mtmp == gy.youmonst) ? uwep : MON_WEP(mtmp);
+        /* "Foo's attack was poisoned." is pretty lame, but at least
+           it's better than "sting" when not a stinging attack... */
+        return (!mwep || !mwep.otrapped) ? _("attack") : _("weapon");
+    } else {
+        return (mattk.aatyp == AT_TUCH) ? _("contact")
+                  : (mattk.aatyp == AT_GAZE) ? _("gaze")
+                       : (mattk.aatyp == AT_BITE) ? _("bite") : _("sting");
+    }
+}
+
+/* called when your intrinsic speed is taken away */
+export function u_slow_down() { /* void */
+    u.uprops[FAST].intrinsic = 0;
+    if (!Fast())
+        You(_("slow down."));
+    else /* speed boots */
+        Your(_("quickness feels less natural."));
+    exercise(A_DEX, FALSE);
+}
+
+/* monster attacked wrong location due to monster blindness, hero
+   invisibility, hero displacement, or hero being underwater */
+function wildmiss(mtmp, mattk) { /* void */
+    let compat;
+    let Monst_name; /* Monnam(), deferred until after early returns */
+    /* expected reasons for wildmiss() */
+    let unotseen = (!mtmp.mcansee || (Invis() && !perceives(mtmp.data)) ? 1 : 0),
+            unotthere = +(Displaced() != 0), usubmerged = +(Underwater() != 0);
+
+    /* the reasons for wildmiss end up getting checked twice so that the
+       impossible can be given, if warranted, before the early returns */
+    if (!unotseen && !unotthere && !usubmerged) {
+        /* this used to be the 'else' case below */
+        impossible(_("%s attacks you without knowing your location?"),
+                   Some_Monnam(mtmp));
+        return;
+    }
+
+    /* no map_invisible() -- no way to tell where _this_ is coming from */
+
+    if (!flags.verbose)
+        return;
+    /* no feedback if hero doesn't see the monster's spot */
+    if (!cansee(mtmp.mx, mtmp.my))
+        return;
+    /* maybe it's attacking an image around the corner? */
+
+    compat = ((mattk.adtyp == AD_SEDU || mattk.adtyp == AD_SSEX)
+              ? could_seduce(mtmp, gy.youmonst, mattk) : 0);
+    Monst_name = Monnam(mtmp);
+
+    set_msg_xy(mtmp.mx, mtmp.my);
+    if (unotseen) { /* !mtmp->cansee || (Invis && !perceives(mtmp->data)) */
+        let swings = (mattk.aatyp == AT_BITE) ? _("snaps")
+                             : (mattk.aatyp == AT_KICK) ? _("kicks")
+                               : (mattk.aatyp == AT_STNG
+                                  || mattk.aatyp == AT_BUTT
+                                  || nolimbs(mtmp.data)) ? _("lunges")
+                                 : _("swings");
+
+        if (compat) {
+            pline(_("%s tries to touch you and misses!"), Monst_name);
+        } else {
+            switch (rn2(3)) {
+            case 0:
+                pline(_("%s %s wildly and misses!"), Monst_name, swings);
+                break;
+            case 1:
+                pline(_("%s attacks a spot beside you."), Monst_name);
+                break;
+            case 2:
+                pline(_("%s strikes at %s!"), Monst_name,
+                      is_waterwall(mtmp.mux,mtmp.muy)
+                        ? _("empty water")
+                        : _("thin air"));
+                break;
+            default:
+                pline(_("%s %s wildly!"), Monst_name, swings);
+                break;
+            }
+        }
+    } else if (unotthere) { /* Displaced */
+        /* give 'displaced' message even if hero is Blind */
+        if (compat)
+            pline(_("%s smiles %s at your %sdisplaced image..."), Monst_name,
+                  (compat == 2) ? _("engagingly") : _("seductively"),
+                  Invis() ? _("invisible ") : _(""));
+        else
+            pline(_("%s strikes at your %sdisplaced image and misses you!"),
+                  /* Note:  if you're both invisible and displaced, only
+                   * monsters which see invisible will attack your displaced
+                   * image, since the displaced image is also invisible. */
+                  Monst_name, Invis() ? _("invisible ") : _(""));
+    } else if (usubmerged) { /* Underwater */
+        /* monsters may miss especially on water level where
+           bubbles shake the player here and there */
+        if (compat)
+            pline(_("%s reaches towards your distorted image."), Monst_name);
+        else
+            pline(_("%s is fooled by water reflections and misses!"),
+                  Monst_name);
+    } else {
+        ; /*NOTREACHED*/
+    }
+}
+
+export function expels(
+    mtmp,
+    mdat,
+    message) { /* void */
+    const $frame = stack_frame(); try {
+    disp.botl = TRUE;
+    if (message) {
+        if (digests(mdat)) {
+            You(_("get regurgitated!"));
+        } else if (enfolds(mdat)) {
+            pline_mon(mtmp, _("%s unfolds and you are released!"), Monnam(mtmp));
+        } else {
+            let blast = stack_array(char, 40);
+            let attk = attacktype_fordmg(mdat, AT_ENGL, AD_ANY);
+
+            chars[blast + 0] = ord('\0');
+            if (!attk) {
+                impossible(_("Swallower has no engulfing attack?"));
+            } else {
+                if (is_whirly(mdat)) {
+                    switch (attk.adtyp) {
+                    case AD_ELEC:
+                        strcpy(blast, _(" in a shower of sparks"));
+                        break;
+                    case AD_COLD:
+                        strcpy(blast, _(" in a blast of frost"));
+                        break;
+                    }
+                } else {
+                    strcpy(blast, _(" with a squelch"));
+                }
+                You(_("get expelled from %s%s!"), mon_nam(mtmp), blast);
+            }
+        }
+    }
+    unstuck(mtmp); /* ball&chain returned in unstuck() */
+    mnexto(mtmp, RLOC_NOMSG);
+    newsym(u.ux, u.uy);
+    /* to cover for a case where mtmp is not in a next square */
+    if (um_dist(mtmp.mx, mtmp.my, 1))
+        pline(_("Brrooaa...  You land hard at some distance."));
+    spoteffects(TRUE);
+    } finally { stack_pop($frame); }
+}
+
+/* select a monster's next attack, possibly substituting for its usual one */
+export function getmattk(
+    magr, mdef,
+    indx, prev_result,
+    alt_attk_buf) { /* struct attack * */
+    const $frame = stack_frame(); try {
+    let mptr = magr.data;
+    let attk = mptr.mattk[indx];
+    let weap = (magr == gy.youmonst) ? uwep : MON_WEP(magr);
+    let udefend = +(mdef == gy.youmonst);
+
+    /* honor SEDUCE=0 */
+    if (!SYSOPT_SEDUCE()) {
+        /* if the first attack is for SSEX damage, all six attacks will be
+           substituted (expected succubus/incubus handling); if it isn't
+           but another one is, only that other one will be substituted */
+        if (mptr.mattk[0].adtyp == AD_SSEX) {
+            struct_assign(alt_attk_buf, c_sa_no[indx]);
+            attk = alt_attk_buf;
+        } else if (attk.adtyp == AD_SSEX) {
+            struct_assign(alt_attk_buf, attk);
+            attk = alt_attk_buf;
+            attk.adtyp = AD_DRLI;
+        }
+    }
+
+    /* prevent a monster with two consecutive disease or hunger attacks
+       from hitting with both of them on the same turn; if the first has
+       already hit, switch to a stun attack for the second */
+    if (indx > 0 && prev_result[indx - 1] > M_ATTK_MISS
+        && (attk.adtyp == AD_DISE || attk.adtyp == AD_PEST
+            || attk.adtyp == AD_FAMN)
+        && attk.adtyp == elt(mptr.mattk, indx - 1).adtyp) {
+        struct_assign(alt_attk_buf, attk);
+        attk = alt_attk_buf;
+        attk.adtyp = AD_STUN;
+
+    /* make drain-energy damage be somewhat in proportion to energy */
+    } else if (attk.adtyp == AD_DREN && udefend) {
+        let ulev = max(u.ulevel, 6);
+
+        struct_assign(alt_attk_buf, attk);
+        attk = alt_attk_buf;
+        /* 3.6.0 used 4d6 but since energy drain came out of max energy
+           once current energy was gone, that tended to have a severe
+           effect on low energy characters; it's now 2d6 with adjustments */
+        if (u.uen <= 5 * ulev && attk.damn > 1) {
+            attk.damn -= 1; /* low energy: 2d6 -> 1d6 */
+            if (u.uenmax <= 2 * ulev && attk.damd > 3)
+                attk.damd -= 3; /* very low energy: 1d6 -> 1d3 */
+        } else if (u.uen > 12 * ulev) {
+            attk.damn += 1; /* high energy: 2d6 -> 3d6 */
+            if (u.uenmax > 20 * ulev)
+                attk.damd += 3; /* very high energy: 3d6 -> 3d9 */
+            /* note: 3d9 is slightly higher than previous 4d6 */
+        }
+
+    /* holders/engulfers who release the hero have mspec_used set to rnd(2)
+       and can't re-hold/re-engulf until it has been decremented to zero;
+       likewise for transformation by genetic engineer */
+    } else if (magr.mspec_used && (attk.aatyp == AT_ENGL
+                                    || attk.aatyp == AT_HUGS
+                                    || attk.adtyp == AD_STCK
+                                    || attk.adtyp == AD_POLY)) {
+        let wimpy = +(attk.damd == 0); /* lichen, violet fungus */
+
+        /* can't re-engulf or re-grab yet; switch to simpler attack */
+        struct_assign(alt_attk_buf, attk);
+        attk = alt_attk_buf;
+        if (attk.adtyp == AD_ACID || attk.adtyp == AD_ELEC
+            || attk.adtyp == AD_COLD || attk.adtyp == AD_FIRE) {
+            attk.aatyp = AT_TUCH;
+        } else {
+            attk.aatyp = AT_CLAW; /* attack message will be "<foo> hits" */
+            attk.adtyp = AD_PHYS;
+        }
+        attk.damn = 1; /* relatively weak: 1d6 */
+        attk.damd = 6;
+        if (wimpy && attk.aatyp == AT_CLAW) {
+            attk.aatyp = AT_TUCH;
+            attk.damn = attk.damd = 0;
+        }
+
+    /* barrow wight, Nazgul, erinys have weapon attack for non-physical
+       damage; force physical damage if attacker has been cancelled or
+       if weapon is sufficiently interesting; a few unique creatures
+       have two weapon attacks where one does physical damage and other
+       doesn't--avoid forcing physical damage for those */
+    } else if (indx == 0 && magr != gy.youmonst
+               && attk.aatyp == AT_WEAP && attk.adtyp != AD_PHYS
+               && !(mptr.mattk[1].aatyp == AT_WEAP
+                    && mptr.mattk[1].adtyp == AD_PHYS)
+               && (magr.mcan
+                   || (weap && ((weap.otyp == CORPSE
+                                 && touch_petrifies(mons[weap.corpsenm]))
+                                || is_art(weap, ART_STORMBRINGER)
+                                || is_art(weap, ART_VORPAL_BLADE))))) {
+        struct_assign(alt_attk_buf, attk);
+        attk = alt_attk_buf;
+        attk.adtyp = AD_PHYS;
+
+    /* liches have a touch attack for cold damage and also a spell attack;
+       they won't use the spell for monster vs monster so become impotent
+       against cold resistant foes; change the touch damage from cold to
+       physical if target will resist */
+    } else if (indx == 0 && attk.aatyp == AT_TUCH && attk.adtyp == AD_COLD
+               && (udefend ? Cold_resistance() : resists_cold(mdef))
+               /* don't substitute if target is immune to normal damage */
+               && mdef.data != mons[PM_SHADE]) {
+        struct_assign(alt_attk_buf, attk);
+        attk = alt_attk_buf;
+        attk.adtyp = AD_PHYS;
+        /* lessen new physical damage compared to old cold damage:
+         *        before  after
+         * lich:    1d10  1d6
+         * demi:    3d4   2d4
+         * master:  3d6   2d6
+         * arch-:   5d6   3d6
+         */
+        attk.damn = uchar(Math.trunc((attk.damn + 1) / 2));
+        if (attk.damd == 10)
+            attk.damd = 6;
+    }
+
+    /* elementals on their home plane do double damage */
+    if (attk != alt_attk_buf && is_home_elemental(mptr)) {
+        struct_assign(alt_attk_buf, attk);
+        attk = alt_attk_buf;
+        attk.damn *= 2;
+    }
+
+    return attk;
+    } finally { stack_pop($frame); }
+}
+
+/* calc some variables needed for mattacku() */
+function calc_mattacku_vars(
+    mtmp,
+    ranged, range2,
+    foundyou, youseeit) { /* void */
+    chars[ranged] = +(mdistu(mtmp) > 3);
+    chars[range2] = +!monnear(mtmp, mtmp.mux, mtmp.muy);
+    chars[foundyou] = +(((mtmp.mux) == u.ux) && ((mtmp.muy) == u.uy));
+    chars[youseeit] = canseemon(mtmp);
+
+    /* do_attack() uses bhitpos to set/clear notonhead; do likewise here */
+    gb.bhitpos.x = u.ux, gb.bhitpos.y = u.uy;
+    /* hero poly'd into a long worm isn't allowed to grow a tail, so
+       hitting tail instead of head can't happen */
+    gn.notonhead = FALSE;
+}
+
+/* return TRUE iff monster or hero is trapped in a (spiked) pit */
+export function mtrapped_in_pit(mtmp) { /* boolean */
+    let ttmp = null;
+
+    if (mtmp == gy.youmonst)
+        ttmp = (u.utrap && u.utraptype == TT_PIT) ? t_at(u.ux, u.uy) : null;
+    else
+        ttmp = mtmp.mtrapped ? t_at(mtmp.mx, mtmp.my) : null;
+
+    if (ttmp && is_pit(ttmp.ttyp))
+        return TRUE;
+    return FALSE;
+}
+
+/*
+ * mattacku: monster attacks you
+ *      returns 1 if monster dies (e.g. "yellow light"), 0 otherwise
+ *      Note: if you're displaced or invisible the monster might attack the
+ *              wrong position...
+ *      Assumption: it's attacking you or an empty square; if there's another
+ *              monster which it attacks by mistake, the caller had better
+ *              take care of it...
+ */
+export function mattacku(mtmp) { /* int */
+    const $frame = stack_frame(); try {
+    let mattk, alt_attk = stack_struct(struct_attack);
+    let i, j = 0, tmp, sum = stack_array(int, NATTK);
+    let mdat = mtmp.data;
+    /*
+     * ranged: Is it near you?  Affects your actions.
+     * range2: Does it think it's near you?  Affects its actions.
+     * foundyou: Is it attacking you or your image?
+     * youseeit: Can you observe the attack?  It might be attacking your
+     *     image around the corner, or invisible, or you might be blind.
+     * skipnonmagc: Are further physical attack attempts useless?  (After
+     *     a wild miss--usually due to attacking displaced image.  Avoids
+     *     excessively verbose miss feedback when monster can do multiple
+     *     attacks and would miss the same wrong spot each time.)
+     */
+    let ranged = stack_var(boolean), range2 = stack_var(boolean), foundyou = stack_var(boolean), firstfoundyou, youseeit = stack_var(boolean),
+            skipnonmagc = FALSE;
+
+    calc_mattacku_vars(mtmp, addr_of(ranged), addr_of(range2), addr_of(foundyou), addr_of(youseeit));
+
+    if (!ranged[0])
+        nomul(0);
+    if (DEADMONSTER(mtmp))
+        return 1;
+    if (Underwater() && !is_swimmer(mtmp.data))
+        return 0;
+
+    /* If swallowed, can only be affected by u.ustuck */
+    if (u.uswallow) {
+        if (mtmp != u.ustuck)
+            return 0;
+        u.ustuck.mux = u.ux;
+        u.ustuck.muy = u.uy;
+        if (u.uinvulnerable)
+            return 0; /* stomachs can't hurt you! */
+        range2[0] = 0;
+        foundyou[0] = 1;
+    } else if (u.usteed) {
+        if (mtmp == u.usteed)
+            /* Your steed won't attack you */
+            return 0;
+        /* Orcs like to steal and eat horses and the like */
+        if (!rn2(is_orc(mtmp.data) ? 2 : 4) && m_next2u(mtmp)) {
+            /* attack your steed instead; 'bhitpos' and 'notonhead' are
+               already set from targeting hero */
+            i = mattackm(mtmp, u.usteed);
+            if ((i & M_ATTK_AGR_DIED) != 0)
+                return 1;
+            /* make sure steed is still alive and within range */
+            if ((i & M_ATTK_DEF_DIED) != 0 || !u.usteed
+                || !m_next2u(mtmp))
+                return 0;
+            /* Let your steed retaliate */
+            gb.bhitpos.x = mtmp.mx, gb.bhitpos.y = mtmp.my;
+            gn.notonhead = FALSE;
+            return +!!(mattackm(u.usteed, mtmp) & M_ATTK_DEF_DIED);
+        }
+    }
+
+    if (u.uundetected && !range2[0] && foundyou[0] && !u.uswallow) {
+        if (!canspotmon(mtmp))
+            map_invisible(mtmp.mx, mtmp.my);
+        u.uundetected = 0;
+        if (is_hider(gy.youmonst.data) && u.umonnum != PM_TRAPPER) {
+            /* ceiling hider */
+            let cc = stack_struct(struct_nhcoord); /* maybe we need a unexto() function? */
+            let obj;
+
+            You(_("fall from the %s!"), ceiling(u.ux, u.uy));
+            /* take monster off map now so that its location
+               is eligible for placing hero; we assume that a
+               removed monster remembers its old spot <mx,my> */
+            remove_monster(mtmp.mx, mtmp.my);
+            if (!enexto(cc, u.ux, u.uy, gy.youmonst.data)
+                /* a fish won't voluntarily swap positions
+                   when it's in water and hero is over land */
+                || (mtmp.data.mlet == S_EEL
+                    && is_pool(mtmp.mx, mtmp.my)
+                    && !is_pool(u.ux, u.uy))) {
+                /* couldn't find any spot for hero; this used to
+                   kill off attacker, but now we just give a "miss"
+                   message and keep both mtmp and hero at their
+                   original positions; hero has become unconcealed
+                   so mtmp's next move will be a regular attack */
+                place_monster(mtmp, mtmp.mx, mtmp.my); /* put back */
+                newsym(u.ux, u.uy); /* u.uundetected was toggled */
+                pline_mon(mtmp, _("%s draws back as you drop!"), Monnam(mtmp));
+                return 0;
+            }
+
+            /* put mtmp at hero's spot and move hero to <cc.x,.y> */
+            newsym(mtmp.mx, mtmp.my); /* finish removal */
+            place_monster(mtmp, u.ux, u.uy);
+            if (mtmp.wormno) {
+                worm_move(mtmp);
+                /* tail hasn't grown, so if it now occupies <cc.x,.y>
+                   then one of its original spots must be free */
+                if (m_at(cc.x, cc.y))
+                    enexto(cc, u.ux, u.uy, gy.youmonst.data);
+            }
+            teleds(cc.x, cc.y, TELEDS_ALLOW_DRAG); /* move hero */
+            set_apparxy(mtmp);
+            newsym(u.ux, u.uy);
+
+            if (gy.youmonst.data.mlet != S_PIERCER)
+                return 0; /* lurkers don't attack */
+
+            obj = which_armor(mtmp, WORN_HELMET);
+            if (hard_helmet(obj)) {
+                Your(_("blow glances off %s %s."), s_suffix(mon_nam(mtmp)),
+                     helm_simple_name(obj));
+            } else {
+                if (3 + find_mac(mtmp) <= rnd(20)) {
+                    pline(_("%s is hit by a falling piercer (you)!"),
+                          Monnam(mtmp));
+                    if ((mtmp.mhp -= d(3, 6)) < 1)
+                        killed(mtmp);
+                } else
+                    pline(_("%s is almost hit by a falling piercer (you)!"),
+                          Monnam(mtmp));
+            }
+        } else {
+            /* surface hider */
+            if (!youseeit[0]) {
+                pline(_("It tries to move where you are hiding."));
+            } else {
+                /* Ugly kludge for eggs.  The message is phrased so as
+                 * to be directed at the monster, not the player,
+                 * which makes "laid by you" wrong.  For the
+                 * parallelism to work, we can't rephrase it, so we
+                 * zap the "laid by you" momentarily instead.
+                 */
+                let obj = svl.level.objects[u.ux][u.uy];
+
+                if (obj || u.umonnum == PM_TRAPPER
+                    || (gy.youmonst.data.mlet == S_EEL
+                        && is_pool(u.ux, u.uy))) {
+                    let save_spe = 0; /* suppress warning */
+
+                    if (obj) {
+                        save_spe = obj.spe;
+                        if (obj.otyp == EGG)
+                            obj.spe = 0;
+                    }
+                    /* note that m_monnam() overrides hallucination, which is
+                       what we want when message is from mtmp's perspective */
+                    if (gy.youmonst.data.mlet == S_EEL
+                        || u.umonnum == PM_TRAPPER)
+                        pline(
+                             _("Wait, %s!  There's a hidden %s named %s there!"),
+                              m_monnam(mtmp),
+                              pmname(gy.youmonst.data, Ugender()), svp.plname);
+                    else
+                        pline(
+                          _("Wait, %s!  There's a %s named %s hiding under %s!"),
+                              m_monnam(mtmp),
+                              pmname(gy.youmonst.data, Ugender()),
+                              svp.plname,
+                              doname(svl.level.objects[u.ux][u.uy]));
+                    if (obj)
+                        obj.spe = save_spe;
+                } else
+                    impossible(_("hiding under nothing?"));
+            }
+            newsym(u.ux, u.uy);
+        }
+        return 0;
+    }
+
+    /* hero might be a mimic, concealed via #monster */
+    if (gy.youmonst.data.mlet == S_MIMIC && U_AP_TYPE() && !range2[0]
+        && foundyou[0] && !u.uswallow) {
+        let sticky = sticks(gy.youmonst.data);
+
+        if (!canspotmon(mtmp))
+            map_invisible(mtmp.mx, mtmp.my);
+        if (sticky && !youseeit[0])
+            pline(_("It gets stuck on you."));
+        else /* see note about m_monnam() above */
+            pline(_("Wait, %s!  That's a %s named %s!"), m_monnam(mtmp),
+                  pmname(gy.youmonst.data, Ugender()), svp.plname);
+        if (sticky)
+            set_ustuck(mtmp);
+        gy.youmonst.m_ap_type = M_AP_NOTHING;
+        gy.youmonst.mappearance = 0;
+        newsym(u.ux, u.uy);
+        return 0;
+    }
+
+    /* non-mimic hero might be mimicking an object after eating m corpse */
+    if (U_AP_TYPE() == M_AP_OBJECT && !range2[0] && foundyou[0] && !u.uswallow) {
+        if (!canspotmon(mtmp))
+            map_invisible(mtmp.mx, mtmp.my);
+        if (!youseeit[0])
+            pline(_("%s %s!"), Something(),
+                  (likes_gold(mtmp.data)
+                   && gy.youmonst.mappearance == GOLD_PIECE)
+                  ? _("tries to pick you up")
+                  : _("disturbs you"));
+        else /* see note about m_monnam() above */
+            pline(_("Wait, %s!  That %s is really %s named %s!"), m_monnam(mtmp),
+                  mimic_obj_name(gy.youmonst),
+                  an(pmname(mons[u.umonnum], Ugender())), svp.plname);
+        if (gm.multi < 0) { /* this should always be the case */
+            let buf = stack_array(char, BUFSZ);
+
+            sprintf(buf, _("You appear to be %s again."), Upolyd() ? an(pmname(gy.youmonst.data,
+                                                      flags.female))
+                           : _("yourself"))
+;
+            unmul(buf); /* immediately stop mimicking */
+        }
+        return 0;
+    }
+
+    /*  Work out the armor class differential   */
+    tmp = AC_VALUE(u.uac) + 10; /* tmp ~= 0 - 20 */
+    tmp += mtmp.m_lev;
+    if (gm.multi < 0)
+        tmp += 4;
+    if ((Invis() && !perceives(mdat)) || !mtmp.mcansee)
+        tmp -= 2;
+    if (mtmp.mtrapped)
+        tmp -= 2;
+    if (tmp <= 0)
+        tmp = 1;
+
+    /* make eels visible the moment they hit/miss us */
+    if (mdat.mlet == S_EEL && mtmp.minvis && cansee(mtmp.mx, mtmp.my)) {
+        mtmp.minvis = 0;
+        newsym(mtmp.mx, mtmp.my);
+    }
+
+    /* when not cancelled and not in current form due to shapechange, many
+       demons can summon more demons and were creatures can summon critters;
+       also, were creature might change from human to animal or vice versa */
+    if (mtmp.cham == NON_PM && !mtmp.mcan && !range2[0]
+        && (is_demon(mdat) || is_were(mdat))) {
+        let already_fleeing = +(mtmp.mflee != 0);
+
+        summonmu(mtmp, youseeit[0]);
+        /* were-creature might have changed to beast form; if that has
+           caused it to become afraid (due to non-human reacting to scroll
+           of scare monster or engraved "Elbereth" which was being ignored
+           while in human form), don't continue this attack */
+        if (mtmp.mflee && !already_fleeing)
+            return 0;
+        mdat = mtmp.data; /* update cached value in case of were change */
+    }
+
+    if (u.uinvulnerable) { /* in the midst of successful prayer */
+        /* monsters won't attack you */
+        if (mtmp == u.ustuck) {
+            pline_mon(mtmp, _("%s loosens its grip slightly."), Monnam(mtmp));
+        } else if (!range2[0]) {
+            if (youseeit[0] || sensemon(mtmp))
+                pline(_("%s starts to attack you, but pulls back."),
+                      Monnam(mtmp));
+            else
+                You_feel(_("%s move nearby."), something());
+        }
+        return 0;
+    }
+
+    /* Unlike defensive stuff, don't let them use item _and_ attack. */
+    if (find_offensive(mtmp)) {
+        let offended = use_offensive(mtmp);
+
+        if (offended != 0)
+            return +(offended == 1);
+    }
+
+    gs.skipdrin = FALSE; /* [see mattackm(mhitm.c)] */
+    firstfoundyou = foundyou[0];
+
+    for (i = 0; i < NATTK; i++) {
+        sum[i] = M_ATTK_MISS;
+        /* counterattack against attack [i-1] might have been fatal */
+        if (DEADMONSTER(mtmp))
+            return 1;
+        if (i > 0) {
+            /* recalc in case prior attack moved hero; mtmp doesn't make
+               another attempt to guess your location but might have
+               accidentally knocked you to where it thought you were
+               [not sure whether that's actually possible] */
+            calc_mattacku_vars(mtmp, addr_of(ranged), addr_of(range2), addr_of(foundyou), addr_of(youseeit));
+            /* if hero was found but isn't anymore, avoid wildmiss now */
+            if (firstfoundyou && !foundyou[0])
+                continue; /* set sum[i] to 'miss' but skip other actions */
+            if (!u_at(gb.bhitpos.x, gb.bhitpos.y))
+                continue;
+        }
+        mon_currwep[0] = null;
+        mattk = getmattk(mtmp, gy.youmonst, i, sum, alt_attk);
+        if ((u.uswallow && mattk.aatyp != AT_ENGL)
+            || (skipnonmagc && mattk.aatyp != AT_MAGC)
+            || (gs.skipdrin && mattk.aatyp == AT_TENT
+                && mattk.adtyp == AD_DRIN))
+            continue;
+
+        switch (mattk.aatyp) {
+        case AT_CLAW: /* "hand to hand" attacks */
+        case AT_KICK:
+        case AT_BITE:
+        case AT_STNG:
+        case AT_TUCH:
+        case AT_BUTT:
+        case AT_TENT:
+            if (mattk.aatyp == AT_KICK && mtrapped_in_pit(mtmp))
+                continue;
+            if (!range2[0] && (!MON_WEP(mtmp) || mtmp.mconf || Conflict()
+                            || !touch_petrifies(gy.youmonst.data))) {
+                if (foundyou[0]) {
+                    if (tmp > (j = rnd(20 + i))) {
+                        if (unsolid(gy.youmonst.data)
+                            && failed_grab(mtmp, gy.youmonst, mattk))
+                            continue;
+                        if (mattk.aatyp != AT_KICK
+                            || !thick_skinned(gy.youmonst.data))
+                            sum[i] = hitmu(mtmp, mattk);
+                    } else
+                        missmu(mtmp, +(tmp == j), mattk);
+                } else {
+                    wildmiss(mtmp, mattk);
+                    /* skip any remaining non-spell attacks */
+                    skipnonmagc = TRUE;
+                }
+            }
+            break;
+
+        case AT_HUGS: /* automatic if prev two attacks succeed */
+            /* Note: if displaced, prev attacks never succeeded */
+            if ((!range2[0] && i >= 2 && sum[i - 1] && sum[i - 2])
+                || mtmp == u.ustuck) {
+                if (!failed_grab(mtmp, gy.youmonst, mattk))
+                    sum[i] = hitmu(mtmp, mattk);
+            }
+            break;
+
+        case AT_GAZE: /* can affect you either ranged or not */
+            /* Medusa gaze already operated through m_respond in
+               dochug(); don't gaze more than once per round. */
+            if (mdat != mons[PM_MEDUSA])
+                sum[i] = gazemu(mtmp, mattk);
+            break;
+
+        case AT_EXPL: /* automatic hit if next to, and aimed at you */
+            if (!range2[0])
+                sum[i] = explmu(mtmp, mattk, foundyou[0]);
+            break;
+
+        case AT_ENGL:
+            if (!range2[0]) {
+                if (foundyou[0]) {
+                    if (u.uswallow
+                        || (!mtmp.mspec_used && tmp > (j = rnd(20 + i)))) {
+                        /* force swallowing monster to be displayed
+                           even when hero is moving away */
+                        flush_screen(1);
+                        sum[i] = gulpmu(mtmp, mattk);
+                    } else {
+                        missmu(mtmp, +(tmp == j), mattk);
+                    }
+                } else if (digests(mtmp.data)) {
+                    pline_mon(mtmp, _("%s gulps some air!"), Monnam(mtmp));
+                } else {
+                    if (youseeit[0]) {
+                        pline_mon(mtmp, _("%s lunges forward and recoils!"),
+                                  Monnam(mtmp));
+                    } else {
+                        if (is_whirly(mtmp.data)) {
+                             ;
+                        }
+                        You_hear(_("a %s nearby."),
+                                 is_whirly(mtmp.data) ? _("rushing noise")
+                                                       : _("splat"));
+                    }
+                }
+            }
+            break;
+        case AT_BREA:
+            if (range2[0])
+                sum[i] = breamu(mtmp, mattk);
+            /* Note: breamu takes care of displacement */
+            break;
+        case AT_SPIT:
+            if (range2[0])
+                sum[i] = spitmu(mtmp, mattk);
+            /* Note: spitmu takes care of displacement */
+            break;
+        case AT_WEAP:
+            if (range2[0]) {
+                if (!Is_rogue_level(u.uz))
+                    thrwmu(mtmp);
+            } else {
+                let hittmp = 0;
+
+                /* Rare but not impossible.  Normally the monster
+                 * wields when 2 spaces away, but it can be
+                 * teleported or whatever....
+                 */
+                if (mtmp.weapon_check == NEED_WEAPON || !MON_WEP(mtmp)) {
+                    mtmp.weapon_check = NEED_HTH_WEAPON;
+                    /* mon_wield_item resets weapon_check as appropriate */
+                    if (mon_wield_item(mtmp) != 0)
+                        break;
+                }
+                if (foundyou[0]) {
+                    mon_currwep[0] = MON_WEP(mtmp);
+                    if (mon_currwep[0]) {
+                        let bash = (is_pole(mon_currwep[0])
+                                        && !is_art(mon_currwep[0],
+                                                   ART_SNICKERSNEE)
+                                        && m_next2u(mtmp) ? 1 : 0);
+
+                        hittmp = hitval(mon_currwep[0], gy.youmonst);
+                        tmp += hittmp;
+                        mswings(mtmp, mon_currwep[0], bash);
+                    }
+                    if (tmp > (j = gm.mhitu_dieroll = rnd(20 + i)))
+                        sum[i] = hitmu(mtmp, mattk);
+                    else
+                        missmu(mtmp, +(tmp == j), mattk);
+                    /* KMH -- Don't accumulate to-hit bonuses */
+                    if (mon_currwep[0])
+                        tmp -= hittmp;
+                } else {
+                    wildmiss(mtmp, mattk);
+                    /* skip any remaining non-spell attacks */
+                    skipnonmagc = TRUE;
+                }
+            }
+            break;
+        case AT_MAGC:
+            if (range2[0])
+                sum[i] = buzzmu(mtmp, mattk);
+            else
+                sum[i] = castmu(mtmp, mattk, TRUE, foundyou[0]);
+            break;
+
+        default: /* no attack */
+            break;
+        }
+        if (disp.botl)
+            bot();
+        /* give player a chance of waking up before dying -kaa */
+        if (sum[i] == M_ATTK_HIT) { /* successful attack */
+            if (u.usleep && u.usleep < svm.moves && !rn2(10)) {
+                gm.multi = -1;
+                gn.nomovemsg = _("The combat suddenly awakens you.");
+            }
+        }
+        if ((sum[i] & M_ATTK_AGR_DIED))
+            return 1; /* attacker dead */
+        if ((sum[i] & M_ATTK_AGR_DONE))
+            break; /* attacker teleported, no more attacks */
+        /* sum[i] == 0: unsuccessful attack */
+    }
+    return 0;
+    } finally { stack_pop($frame); }
+}
+
+/* monster summons help for its fight against hero */
+function summonmu(mtmp, youseeit) { /* void */
+    const $frame = stack_frame(); try {
+    let mdat = mtmp.data;
+
+    /*
+     * Extracted from mattacku() to reduce clutter there.
+     * Caller has verified that 'mtmp' hasn't been cancelled
+     * and isn't a shapechanger.
+     */
+
+    if (is_demon(mdat)) {
+        if (mdat != mons[PM_BALROG] && mdat != mons[PM_AMOROUS_DEMON]) {
+            if (!rn2(Inhell() ? 10 : 16))
+                msummon(mtmp);
+        }
+        return; /* no such thing as a demon were creature, so we're done */
+    }
+
+    if (is_were(mdat)) {
+        /* if hero has Protection_from_shape_changers, new_were() will work
+           in the critter-to-human direction but be a no-op the other way;
+           we repeat the criteria here for clarity */
+        if (is_human(mdat)) { /* maybe switch to animal form */
+            if (!Protection_from_shape_changers() && !rn2(5 - (night() * 2)))
+                new_were(mtmp);
+        } else { /* maybe switch to back human form */
+            if (Protection_from_shape_changers() || !rn2(30))
+                new_were(mtmp);
+        }
+        mdat = mtmp.data; /* form change invalidates cached value */
+
+        /* maybe summon compatible critters;
+           not blocked by Protection_from_shape_changers */
+        if (!rn2(10)) {
+            let numseen = stack_var(int), numhelp;
+            let buf = stack_array(char, BUFSZ), genericwere = stack_array(char, BUFSZ);
+
+            strcpy(genericwere, _("creature"));
+            if (youseeit)
+                pline_mon(mtmp, _("%s summons help!"), Monnam(mtmp));
+            numhelp = were_summon(mdat, FALSE, numseen, genericwere);
+            if (youseeit) {
+                if (numhelp > 0) {
+                    if (numseen[0] == 0)
+                        You_feel(_("hemmed in."));
+                } else {
+                    pline(_("But none comes."));
+                }
+            } else {
+                let from_nowhere;
+
+                if (!Deaf()) {
+                    pline(_("%s %s!"), Something(),
+                          makeplural(growl_sound(mtmp)));
+                    from_nowhere = _("");
+                } else {
+                    from_nowhere = _(" from nowhere");
+                }
+                if (numhelp > 0) {
+                    if (numseen[0] < 1) {
+                        You_feel(_("hemmed in."));
+                    } else {
+                        if (numseen[0] == 1)
+                            sprintf(buf, _("%s appears"), an(genericwere));
+                        else
+                            sprintf(buf, _("%s appear"), makeplural(genericwere))
+;
+                        pline(_("%s%s!"), upstart(buf), from_nowhere);
+                    }
+                } /* else no help came; but you didn't know it tried */
+            }
+        } /* summon critters */
+        return;
+    } /* were creature */
+    } finally { stack_pop($frame); }
+}
+
+export function diseasemu(mdat) { /* boolean */
+    if (Sick_resistance()) {
+        You_feel(_("a slight illness."));
+        return FALSE;
+    } else {
+        make_sick(Sick() ? Math.trunc(Sick() / 3) + 1 : (rn2(ACURR(A_CON)) + (20)),
+                  mdat.pmnames[NEUTRAL], TRUE, SICK_NONVOMITABLE);
+        return TRUE;
+    }
+}
+
+/* check whether slippery clothing protects from hug or wrap attack */
+export function u_slip_free(
+    mtmp,
+    mattk) { /* boolean */
+    let obj;
+
+    /* greased armor does not protect against AT_ENGL+AD_WRAP */
+    if (mattk.aatyp == AT_ENGL)
+        return FALSE;
+
+    obj = (uarmc ? uarmc : uarm);
+    if (!obj)
+        obj = uarmu;
+    if (mattk.adtyp == AD_DRIN)
+        obj = uarmh;
+
+    /* if your cloak/armor is greased, monster slips off; this
+       protection might fail (33% chance) when the armor is cursed */
+    if (obj && (obj.greased || obj.otyp == OILSKIN_CLOAK)
+        && (!obj.cursed || rn2(3))) {
+        pline_mon(mtmp, _("%s %s your %s %s!"), Monnam(mtmp),
+              (mattk.adtyp == AD_WRAP) ? _("slips off of")
+                                        : _("grabs you, but cannot hold onto"),
+              obj.greased ? _("greased") : _("slippery"),
+              /* avoid "slippery slippery cloak"
+                 for undiscovered oilskin cloak */
+              (obj.greased || objects[obj.otyp].oc_name_known)
+                  ? xname(obj)
+                  : cloak_simple_name(obj));
+
+        if (obj.greased && !rn2(2)) {
+            pline_The(_("grease wears off."));
+            obj.greased = 0;
+            update_inventory();
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* armor that sufficiently covers the body might be able to block magic */
+export function magic_negation(mon) { /* int */
+    let o;
+    let wearmask;
+    let armpro, mc = 0;
+    let is_you = +(mon == gy.youmonst),
+            via_amul = FALSE,
+            gotprot = is_you ? +(EProtection() != 0)
+                             /* high priests have innate protection */
+                             : +(mon.data == mons[PM_HIGH_CLERIC]);
+
+    for (o = is_you ? gi.invent : mon.minvent; o; o = o.nobj) {
+        /* a_can field is only applicable for armor (which must be worn) */
+        if ((o.owornmask & W_ARMOR) != 0) {
+            armpro = objects[o.otyp].oc_oc2;
+            if (armpro > mc)
+                mc = armpro;
+        } else if ((o.owornmask & W_AMUL) != 0) {
+            via_amul = +(o.otyp == AMULET_OF_GUARDING);
+        }
+        /* if we've already confirmed Protection, skip additional checks */
+        if (is_you || gotprot)
+            continue;
+
+        /* omit W_SWAPWEP+W_QUIVER; W_ART+W_ARTI handled by protects() */
+        wearmask = W_ARMOR | W_ACCESSORY;
+        if (o.oclass == WEAPON_CLASS || is_weptool(o))
+            wearmask = or64(wearmask, W_WEP);
+        if (protects(o, ((o.owornmask & wearmask) != 0) ? TRUE : FALSE))
+            gotprot = TRUE;
+    }
+
+    if (gotprot) {
+        /* extrinsic Protection increases mc by 1 (2 for amulet of guarding);
+           multiple sources don't provide multiple increments */
+        mc += via_amul ? 2 : 1;
+        if (mc > 3)
+            mc = 3;
+    } else if (mc < 1) {
+        /* intrinsic Protection is weaker (play balance; obtaining divine
+           protection is too easy); it confers minimum mc 1 instead of 0 */
+        if ((is_you && ((HProtection() && u.ublessed > 0) || u.uspellprot))
+            /* aligned priests and angels have innate intrinsic Protection */
+            || (mon.data == mons[PM_ALIGNED_CLERIC]
+                || is_minion(mon.data)))
+            mc = 1;
+    }
+    return mc;
+}
+
+/*
+ * hitmu: monster hits you
+ * returns MM_ flags
+*/
+function hitmu(mtmp, mattk) { /* int */
+    const $frame = stack_frame(); try {
+    let mdat = mtmp.data;
+    let olduasmon = gy.youmonst.data;
+    let res;
+    let mhm = stack_struct(struct_mhitm_data);
+    mhm.hitflags = M_ATTK_MISS;
+    mhm.permdmg = 0;
+    mhm.specialdmg = 0;
+    mhm.done = FALSE;
+
+    if (!canspotmon(mtmp))
+        map_invisible(mtmp.mx, mtmp.my);
+
+    /*  If the monster is undetected & hits you, you should know where
+     *  the attack came from.
+     */
+    if (mtmp.mundetected && (hides_under(mdat) || mdat.mlet == S_EEL)) {
+        mtmp.mundetected = 0;
+        if (!tp_sensemon(mtmp) && !Detect_monsters()) {
+            let obj;
+            let what;
+            let Amonbuf = stack_array(char, BUFSZ);
+
+            if ((obj = svl.level.objects[mtmp.mx][mtmp.my]) != null) {
+                if (Blind() && !obj.dknown)
+                    what = something();
+                else if (is_pool(mtmp.mx, mtmp.my) && !Underwater())
+                    what = _("the water");
+                else
+                    what = doname(obj);
+
+                strcpy(Amonbuf, Amonnam(mtmp));
+                /* mtmp might be invisible with hero unable to see same */
+                if (!strcmp(Amonbuf, _("It"))) /* note: not strcmpi() */
+                    strcpy(Amonbuf, Something());
+                pline(_("%s was hidden under %s!"), Amonbuf, what);
+            }
+            newsym(mtmp.mx, mtmp.my);
+        }
+    }
+
+    /*  First determine the base damage done */
+    mhm.damage = d(mattk.damn, mattk.damd);
+    if ((is_undead(mdat) || is_vampshifter(mtmp)) && midnight())
+        mhm.damage += d(mattk.damn, mattk.damd); /* extra dmg */
+
+    mhitm_adtyping(mtmp, mattk, gy.youmonst, mhm);
+
+    mhitm_knockback(mtmp, gy.youmonst, mattk, ref_of(mhm, "hitflags"),
+                           +(MON_WEP(mtmp) != null));
+
+    if (mhm.done)
+        return mhm.hitflags;
+
+    if ((Upolyd() ? u.mh : u.uhp) < 1) {
+        /* already dead? call rehumanize() or done_in_by() as appropriate */
+        mdamageu(mtmp, 1);
+        mhm.damage = 0;
+    }
+
+    /*  Negative armor class reduces damage done instead of fully protecting
+     *  against hits.
+     */
+    if (mhm.damage && u.uac < 0) {
+        mhm.damage -= rnd(-u.uac);
+        if (mhm.damage < 1)
+            mhm.damage = 1;
+    }
+
+    if (mhm.damage > 0) {
+        /* [Half_physical_damage isn't applied to mhm.permdmg] */
+        if (Half_physical_damage()
+            /* Mitre of Holiness, even if not currently blessed */
+            || (Role_if(PM_CLERIC) && uarmh && is_quest_artifact(uarmh)
+                && mon_hates_blessings(mtmp)))
+            mhm.damage = Math.trunc((mhm.damage + 1) / 2);
+
+        if (mhm.permdmg) { /* Death's life force drain */
+            let lowerlimit, hpmax_p;
+            /*
+             * Apply some of the damage to permanent hit points:
+             *  polymorphed         100% against poly'd hpmax
+             *  hpmax > 25*lvl      100% against normal hpmax
+             *  hpmax > 10*lvl  50..100%
+             *  hpmax >  5*lvl  25..75%
+             *  otherwise        0..50%
+             * Never reduces hpmax below 1 hit point per level.
+             */
+            mhm.permdmg = rn2(Math.trunc(mhm.damage / 2) + 1);
+            if (Upolyd() || u.uhpmax > 25 * u.ulevel)
+                mhm.permdmg = mhm.damage;
+            else if (u.uhpmax > 10 * u.ulevel)
+                mhm.permdmg += Math.trunc(mhm.damage / 2);
+            else if (u.uhpmax > 5 * u.ulevel)
+                mhm.permdmg += Math.trunc(mhm.damage / 4);
+
+            if (Upolyd()) {
+                hpmax_p = ref_of(u, "mhmax");
+                /* [can't use gy.youmonst.m_lev] */
+                lowerlimit = min(gy.youmonst.data.mlevel, u.ulevel);
+            } else {
+                hpmax_p = ref_of(u, "uhpmax");
+                lowerlimit = minuhpmax(1);
+            }
+            if (hpmax_p[0] - mhm.permdmg > lowerlimit)
+                hpmax_p[0] -= mhm.permdmg;
+            else if (hpmax_p[0] > lowerlimit)
+                hpmax_p[0] = lowerlimit;
+            /* else unlikely...
+             * already at or below minimum threshold, do nothing to hpmax */
+            disp.botl = TRUE;
+        }
+
+        mdamageu(mtmp, mhm.damage);
+    }
+
+    if (mhm.damage)
+        res = passiveum(olduasmon, mtmp, mattk);
+    else
+        res = M_ATTK_HIT;
+    stop_occupation();
+    return res;
+    } finally { stack_pop($frame); }
+}
+
+/* An interface for use when taking a blindfold off, for example,
+ * to see if an engulfing attack should immediately take affect, like
+ * a passive attack. TRUE if engulfing blindness occurred */
+export function gulp_blnd_check() { /* boolean */
+    let mattk;
+
+    if (!Blinded() && u.uswallow
+        && (mattk = attacktype_fordmg(u.ustuck.data, AT_ENGL, AD_BLND))
+        && can_blnd(u.ustuck, gy.youmonst, mattk.aatyp, null)) {
+        ++u.uswldtim; /* compensate for gulpmu change */
+        gulpmu(u.ustuck, mattk);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* monster swallows you, or damage if already swallowed (u.uswallow != 0) */
+function gulpmu(mtmp, mattk) { /* int */
+    const $frame = stack_frame(); try {
+    let t = t_at(u.ux, u.uy);
+    let tmp = d(mattk.damn, mattk.damd);
+    let tim_tmp;
+    let otmp2, nextobj;
+    let i;
+    let physical_damage = FALSE;
+
+    if (!u.uswallow) { /* swallows you */
+        let omx = mtmp.mx, omy = mtmp.my;
+
+        if (!engulf_target(mtmp, gy.youmonst))
+            return M_ATTK_MISS;
+        if ((t && is_pit(t.ttyp)) && sobj_at(BOULDER, u.ux, u.uy))
+            return M_ATTK_MISS;
+        if (failed_grab(mtmp, gy.youmonst, mattk))
+            return M_ATTK_MISS;
+
+        if (Punished())
+            unplacebc(); /* ball&chain go away */
+        remove_monster(omx, omy);
+        mtmp.mtrapped = 0; /* no longer on old trap */
+        place_monster(mtmp, u.ux, u.uy);
+        set_ustuck(mtmp);
+        newsym(mtmp.mx, mtmp.my);
+        /* 5.0: dismount for all engulfers, not just for purple worms */
+        if (u.usteed) {
+            let buf = stack_array(char, BUFSZ);
+
+            strcpy(buf, mon_nam(u.usteed));
+            urgent_pline(_("%s %s forward and plucks you off %s!"),
+                         Some_Monnam(mtmp),
+                         /* 't', purple 'w' */
+                         is_animal(mtmp.data) ? _("lunges")
+                           /* 'v', air 'E' */
+                           : is_whirly(mtmp.data) ? _("whirls")
+                             /* none (some 'v', already whirling) */
+                             : unsolid(mtmp.data) ? _("flows")
+                               /* ochre 'j', Juiblex */
+                               : amorphous(mtmp.data) ? _("oozes")
+                                 /* none (all AT_ENGL are already covered) */
+                                 : _("surges"),
+                         buf);
+            dismount_steed(DISMOUNT_ENGULFED);
+        } else {
+            urgent_pline(_("%s %s!"), Monnam(mtmp),
+                         digests(mtmp.data) ? _("swallows you whole")
+                         : enfolds(mtmp.data) ? _("folds itself around you")
+                           : _("engulfs you"));
+        }
+        stop_occupation();
+        reset_occupations(); /* behave as if you had moved */
+
+        if (u.utrap) {
+            You(_("are released from the %s!"),
+                (u.utraptype == TT_WEB) ? _("web") : _("trap"));
+            reset_utrap(FALSE);
+        }
+
+        i = number_leashed();
+        if (i > 0) {
+            let s = (i > 1) ? _("leashes") : _("leash");
+
+            pline_The(_("%s %s loose."), s, vtense(s, _("snap")));
+            unleash_all();
+        }
+
+        if (touch_petrifies(gy.youmonst.data) && !resists_ston(mtmp)) {
+            /* put the attacker back where it started;
+               the resulting statue will end up there
+               [note: if poly'd hero could ride or non-poly'd hero could
+               acquire touch_petrifies() capability somehow, this code
+               would need to deal with possibility of steed having taken
+               engulfer's previous spot when hero was forcibly dismounted] */
+            remove_monster(mtmp.mx, mtmp.my); /* u.ux,u.uy */
+            place_monster(mtmp, omx, omy);
+            minstapetrify(mtmp, TRUE);
+            /* normally unstuck() would do this, but we're not
+               fully swallowed yet so that won't work here */
+            if (Punished())
+                placebc();
+            set_ustuck(null);
+            return (!DEADMONSTER(mtmp)) ? M_ATTK_MISS : M_ATTK_AGR_DIED;
+        }
+
+        display_nhwindow()(WIN_MESSAGE, FALSE);
+        vision_recalc(2); /* hero can't see anything */
+        u.uswallow = 1;
+        /* for digestion, shorter time is more dangerous;
+           for other swallowings, longer time means more
+           chances for the swallower to attack */
+        if (mattk.adtyp == AD_DGST) {
+            /* having good armor & high constitution makes
+               it take longer for you to be digested, but
+               you'll end up trapped inside for longer too */
+            tim_tmp = ACURR(A_CON) + 10 - u.uac + rn2(20);
+            if (tim_tmp < 0)
+                tim_tmp = 0;
+            tim_tmp = Math.trunc(tim_tmp / mtmp.m_lev);
+            tim_tmp += 3;
+        } else {
+            /* higher level attacker takes longer to eject hero */
+            tim_tmp = rnd(mtmp.m_lev + Math.trunc(10 / 2));
+        }
+        /* u.uswldtim always set > 1 */
+        u.uswldtim = unsigned(((tim_tmp < 2) ? 2 : tim_tmp));
+        swallowed(1); /* update the map display, shows hero swallowed */
+        if (!flaming(mtmp.data)) {
+            for (otmp2 = gi.invent; otmp2; otmp2 = nextobj) {
+                nextobj = otmp2.nobj;
+                snuff_lit(otmp2);
+            }
+        }
+    }
+
+    if (mtmp != u.ustuck)
+        return M_ATTK_MISS;
+    if (Punished()) {
+        /* ball&chain are in limbo while swallowed; update their internal
+           location to be at swallower's spot */
+        if (uchain.where == OBJ_FREE)
+            uchain.ox = mtmp.mx, uchain.oy = mtmp.my;
+        if (uball.where == OBJ_FREE)
+            uball.ox = mtmp.mx, uball.oy = mtmp.my;
+    }
+    if (u.uswldtim > 0)
+        u.uswldtim -= 1;
+
+    switch (mattk.adtyp) {
+    case AD_DGST:
+        physical_damage = TRUE;
+        if (Slow_digestion()) {
+            /* Messages are handled below */
+            u.uswldtim = 0;
+            tmp = 0;
+        } else if (u.uswldtim == 0) {
+            pline(_("%s totally digests you!"), Monnam(mtmp));
+            tmp = u.uhp;
+            if (Half_physical_damage())
+                tmp *= 2; /* sorry */
+        } else {
+            pline(_("%s%s digests you!"), Monnam(mtmp),
+                  (u.uswldtim == 2) ? _(" thoroughly")
+                                    : (u.uswldtim == 1) ? _(" utterly") : _(""));
+            exercise(A_STR, FALSE);
+        }
+        break;
+    case AD_PHYS:
+        physical_damage = TRUE;
+        if (mtmp.data == mons[PM_FOG_CLOUD]) {
+            You(_("are laden with moisture and %s"),
+                flaming(gy.youmonst.data)
+                    ? _("are smoldering out!")
+                    : Breathless() ? _("find it mildly uncomfortable.")
+                                 : amphibious(gy.youmonst.data)
+                                       ? _("feel comforted.")
+                                       : _("can barely breathe!"));
+            if ((Amphibious() || Breathless()) && !flaming(gy.youmonst.data))
+                tmp = 0;
+        } else {
+            You(_("are %s!"), enfolds(mtmp.data) ? _("being squashed")
+                                               : _("pummeled with debris"));
+            exercise(A_STR, FALSE);
+        }
+        break;
+    case AD_ACID:
+        if (Acid_resistance()) {
+            You(_("are covered with a seemingly harmless goo."));
+            /* NB: the monst[un]seesu calls in gulpmu are no-ops since the
+               hero must be currently swallowed for the attack to hit... */
+            monstseesu(M_SEEN_ACID);
+            tmp = 0;
+        } else {
+            if (Hallucination())
+                pline(_("Ouch!  You've been slimed!"));
+            else
+                You(_("are covered in slime!  It burns!"));
+            exercise(A_STR, FALSE);
+            monstunseesu(M_SEEN_ACID);
+        }
+        break;
+    case AD_BLND:
+        if (can_blnd(mtmp, gy.youmonst, mattk.aatyp, null)) {
+            if (!Blind()) {
+                let was_blinded = Blinded();
+
+                if (!Blinded())
+                    You_cant(_("see in here!"));
+                make_blinded(tmp, FALSE);
+                if (!was_blinded && !Blind())
+                    Your1(vision_clears());
+            } else
+                /* keep him blind until disgorged */
+                incr_itimeout(ref_of(u.uprops[BLINDED], "intrinsic"), 1);
+        }
+        tmp = 0;
+        break;
+    case AD_ELEC:
+        if (!mtmp.mcan && rn2(2)) {
+            pline_The(_("air around you crackles with electricity."));
+            if (Shock_resistance()) {
+                shieldeff(u.ux, u.uy);
+                You(_("seem unhurt."));
+                monstseesu(M_SEEN_ELEC);
+                ugolemeffects(AD_ELEC, tmp);
+                tmp = 0;
+            } else {
+                monstunseesu(M_SEEN_ELEC);
+            }
+        } else
+            tmp = 0;
+        break;
+    case AD_COLD:
+        if (!mtmp.mcan && rn2(2)) {
+            if (Cold_resistance()) {
+                shieldeff(u.ux, u.uy);
+                You_feel(_("mildly chilly."));
+                monstseesu(M_SEEN_COLD);
+                ugolemeffects(AD_COLD, tmp);
+                tmp = 0;
+            } else {
+                You(_("are freezing to death!"));
+                monstunseesu(M_SEEN_COLD);
+            }
+        } else
+            tmp = 0;
+        break;
+    case AD_FIRE:
+        if (!mtmp.mcan && rn2(2)) {
+            if (Fire_resistance()) {
+                shieldeff(u.ux, u.uy);
+                You_feel(_("mildly hot."));
+                monstseesu(M_SEEN_FIRE);
+                ugolemeffects(AD_FIRE, tmp);
+                tmp = 0;
+            } else {
+                You(_("are burning to a crisp!"));
+                monstunseesu(M_SEEN_FIRE);
+            }
+            burn_away_slime();
+        } else
+            tmp = 0;
+        break;
+    case AD_DISE:
+        if (!diseasemu(mtmp.data))
+            tmp = 0;
+        break;
+    case AD_DREN:
+        /* AC magic cancellation doesn't help when engulfed */
+        if (!mtmp.mcan && rn2(4)) /* 75% chance */
+            drain_en(tmp, FALSE);
+        tmp = 0;
+        break;
+    default:
+        physical_damage = TRUE;
+        tmp = 0;
+        break;
+    }
+
+    if (physical_damage) {
+        /* same damage reduction for AC as in hitmu */
+        if (u.uac < 0)
+            tmp -= rnd(-u.uac);
+        if (tmp < 0)
+            tmp = 1;
+
+        tmp = Maybe_Half_Phys(tmp);
+    }
+
+    gm.mswallower = mtmp; /* match gulpmm() */
+    mdamageu(mtmp, tmp);
+    gm.mswallower = null;
+    if (tmp)
+        stop_occupation();
+
+    if (!u.uswallow) {
+        ; /* life-saving has already expelled swallowed hero */
+    } else if (touch_petrifies(gy.youmonst.data) && !resists_ston(mtmp)) {
+        pline(_("%s very hurriedly %s you!"), Monnam(mtmp),
+              digests(mtmp.data) ? _("regurgitates")
+              : enfolds(mtmp.data) ? _("releases")
+                : _("expels"));
+        expels(mtmp, mtmp.data, FALSE);
+    } else if (!u.uswldtim || gy.youmonst.data.msize >= MZ_HUGE) {
+        /* As of 3.6.2: u.uswldtim used to be set to 0 by life-saving but it
+           expels now so the !u.uswldtim case is no longer possible;
+           however, polymorphing into a huge form while already
+           swallowed is still possible */
+        You(_("get %s!"), digests(mtmp.data) ? _("regurgitated")
+                       : enfolds(mtmp.data) ? _("released")
+                         : _("expelled"));
+        if (flags.verbose
+            && (digests(mtmp.data) && Slow_digestion()))
+            pline(_("Obviously %s doesn't like your taste."), mon_nam(mtmp));
+        expels(mtmp, mtmp.data, FALSE);
+    }
+    return M_ATTK_HIT;
+    } finally { stack_pop($frame); }
+}
+
+/* monster explodes in your face */
+function explmu(
+    mtmp,
+    mattk,
+    ufound) { /* int */
+    let kill_agr = TRUE;
+    let not_affected;
+    let tmp;
+
+    if (mtmp.mcan)
+        return M_ATTK_MISS;
+
+    tmp = d(mattk.damn, mattk.damd);
+    not_affected = defended(mtmp, mattk.adtyp);
+
+    if (!ufound) {
+        pline(_("%s explodes at a spot in %s!"),
+              canseemon(mtmp) ? Monnam(mtmp) : _("It"),
+              is_waterwall(mtmp.mux,mtmp.muy) ? _("empty water")
+                                                : _("thin air"));
+    } else {
+        hitmsg(mtmp, mattk);
+    }
+
+    switch (mattk.adtyp) {
+    case AD_COLD:
+    case AD_FIRE:
+    case AD_ELEC:
+        mon_explodes(mtmp, mattk);
+        if (!DEADMONSTER(mtmp))
+            kill_agr = FALSE; /* lifesaving? */
+        break;
+    case AD_BLND:
+        not_affected = resists_blnd(gy.youmonst);
+        if (ufound && !not_affected) {
+            /* sometimes you're affected even if it's invisible */
+            if (mon_visible(mtmp) || (rnd(tmp = Math.trunc(tmp / 2)) > u.ulevel)) {
+                You(_("are blinded by a blast of light!"));
+                make_blinded(tmp, FALSE);
+                if (!Blind())
+                    Your1(vision_clears());
+            } else if (flags.verbose)
+                You(_("get the impression it was not terribly bright."));
+        }
+        break;
+    case AD_HALU:
+        not_affected |= (Blind() || (u.umonnum == PM_BLACK_LIGHT
+                                  || u.umonnum == PM_VIOLET_FUNGUS
+                                  || dmgtype(gy.youmonst.data, AD_STUN)) ? 1 : 0);
+        if (ufound && !not_affected) {
+            let chg;
+            if (!Hallucination())
+                You(_("are caught in a blast of kaleidoscopic light!"));
+            /* avoid hallucinating the black light as it dies */
+            mondead(mtmp);    /* remove it from map now */
+            kill_agr = FALSE; /* already killed (maybe lifesaved) */
+            chg =
+                make_hallucinated(HHallucination() + tmp, FALSE, 0);
+            You(_("%s."), chg ? _("are freaked out") : _("seem unaffected"));
+        }
+        break;
+    default:
+        impossible(_("unknown exploder damage type %d"), mattk.adtyp);
+        break;
+    }
+    if (not_affected) {
+        You(_("seem unaffected by it."));
+        ugolemeffects(mattk.adtyp, tmp);
+    }
+    if (kill_agr && !DEADMONSTER(mtmp))
+        mondead(mtmp);
+    wake_nearto(mtmp.mx, mtmp.my, 7 * 7);
+    return (!DEADMONSTER(mtmp)) ? M_ATTK_MISS : M_ATTK_AGR_DIED;
+}
+
+/* monster gazes at you */
+export function gazemu(mtmp, mattk) { /* int */
+    let reactions = static_array("gazemu.reactions", ptr_to(char), null, [
+        _("confused"),              /* [0] */
+        _("stunned"),               /* [1] */
+        _("puzzled"),   _("dazzled"),  /* [2,3] */
+        _("irritated"), _("inflamed"), /* [4,5] */
+        _("tired"),                 /* [6] */
+        _("dulled"),                /* [7] */
+    ]);
+    let react = -1;
+    let is_medusa, reflectable,
+            cancelled = +(mtmp.mcan != 0), already = FALSE,
+            mcanseeu = (canseemon(mtmp) && couldsee(mtmp.mx, mtmp.my)
+                        && mtmp.mcansee ? 1 : 0);
+
+    if (m_seenres(mtmp, cvt_adtyp_to_mseenres(mattk.adtyp)))
+        return M_ATTK_MISS;
+
+    is_medusa = +(mtmp.data == mons[PM_MEDUSA]);
+    reflectable = (Reflecting() && couldsee(mtmp.mx, mtmp.my) && is_medusa ? 1 : 0);
+    /* assumes that hero has to see monster's gaze in order to be
+       affected, rather than monster just having to look at hero;
+       Unaware:  asleep or unconscious => not blind but won't see;
+       when hallucinating, hero's brain doesn't register what
+       it's seeing correctly so the gaze is usually ineffective
+       [this could be taken a lot farther and select a gaze effect
+       appropriate to what's currently being displayed, giving
+       ordinary monsters a gaze attack when hero thinks he or she
+       is facing a gazing creature, but let's not go that far...] */
+    if ((Hallucination() && rn2(4)) || (Unaware() && !reflectable))
+        cancelled = TRUE;
+
+    switch (mattk.adtyp) {
+    case AD_STON:
+        /* note: Medusa is the only monster with stoning gaze, so
+           'is_medusa' will always be True here */
+        if (cancelled || !mtmp.mcansee) {
+            if (!canseemon(mtmp))
+                break; /* silently */
+            if (Unaware()) { /* can't see attacker even though not blind */
+                react = is_medusa ? 4 : 2; /* irritated or puzzled */
+                break;
+            }
+            if (is_medusa && Hallucination() && !rn2(3))
+                pline(_("Someone seems overdue for a serpent cut."));
+            else
+                pline_mon(mtmp, _("%s %s."), Monnam(mtmp),
+                      (is_medusa && mtmp.mcan && !react)
+                          ? _("doesn't look all that ugly")
+                          : _("gazes ineffectually"));
+            break;
+         }
+        if (reflectable) {
+            /* hero has line of sight to Medusa and she's not blind */
+            let useeit = canseemon(mtmp);
+
+            if (useeit)
+                ureflects(_("%s gaze is reflected by your %s."),
+                                 s_suffix(Monnam(mtmp)));
+            if (mon_reflects(mtmp, !useeit ? 0
+                                  : _("The gaze is reflected away by %s %s!")))
+                break;
+            if (!m_canseeu(mtmp)) { /* probably you're invisible */
+                if (useeit)
+                    pline(
+                      _("%s doesn't seem to notice that %s gaze was reflected."),
+                          Monnam(mtmp), mhis(mtmp));
+                break;
+            }
+            if (useeit)
+                pline_mon(mtmp, _("%s is turned to stone!"), Monnam(mtmp));
+            gs.stoned = TRUE;
+            killed(mtmp);
+
+            if (!DEADMONSTER(mtmp))
+                break;
+            return M_ATTK_AGR_DIED;
+        }
+        if (canseemon(mtmp) && couldsee(mtmp.mx, mtmp.my)
+            && !Stone_resistance() && !Unaware()) {
+            You(_("meet %s gaze."), s_suffix(mon_nam(mtmp)));
+            stop_occupation();
+            if (poly_when_stoned(gy.youmonst.data) && polymon(PM_STONE_GOLEM))
+                break;
+            urgent_pline(_("You turn to stone..."));
+            svk.killer.format = KILLED_BY;
+            strcpy(svk.killer.name, pmname(mtmp.data, Mgender(mtmp)));
+            done(STONING);
+        }
+        break;
+    case AD_CONF:
+        if (mcanseeu && !mtmp.mspec_used && rn2(5)) {
+            if (cancelled) {
+                react = 0; /* "confused" */
+                already = +(mtmp.mconf != 0);
+            } else {
+                let conf = d(3, 4);
+
+                mtmp.mspec_used = mtmp.mspec_used + (conf + rn2(6));
+                if (!Confusion())
+                    pline_mon(mtmp, _("%s gaze confuses you!"),
+                              s_suffix(Monnam(mtmp)));
+                else
+                    You(_("are getting more and more confused."));
+                make_confused(HConfusion() + conf, FALSE);
+                stop_occupation();
+            }
+        }
+        break;
+    case AD_STUN:
+        if (mcanseeu && !mtmp.mspec_used && rn2(5)) {
+            if (cancelled) {
+                react = 1; /* "stunned" */
+                already = +(mtmp.mstun != 0);
+            } else {
+                let stun = d(2, 6);
+
+                mtmp.mspec_used = mtmp.mspec_used + (stun + rn2(6));
+                pline_mon(mtmp, _("%s stares piercingly at you!"), Monnam(mtmp));
+                make_stunned((HStun() & TIMEOUT) + stun, TRUE);
+                stop_occupation();
+            }
+        }
+        break;
+    case AD_BLND:
+        if (canseemon(mtmp) && !resists_blnd(gy.youmonst)
+            && mdistu(mtmp) <= BOLT_LIM * BOLT_LIM) {
+            if (cancelled) {
+                react = rn1(2, 2); /* "puzzled" || "dazzled" */
+                already = +(mtmp.mcansee == 0);
+                /* Archons gaze every round; we don't want cancelled ones
+                   giving the "seems puzzled/dazzled" message that often */
+                if (mtmp.mcan && mtmp.data == mons[PM_ARCHON] && rn2(5))
+                    react = -1;
+            } else {
+                let blnd = d(mattk.damn, mattk.damd);
+
+                You(_("are blinded by %s radiance!"), s_suffix(mon_nam(mtmp)));
+                make_blinded(blnd, FALSE);
+                stop_occupation();
+                /* not blind at this point implies you're wearing
+                   the Eyes of the Overworld; make them block this
+                   particular stun attack too */
+                if (!Blind()) {
+                    Your1(vision_clears());
+                } else {
+                    let oldstun = (HStun() & TIMEOUT), newstun = rnd(3);
+
+                    /* we don't want to increment stun duration every time
+                       or sighted hero will become incapacitated */
+                    make_stunned(max(oldstun, newstun), TRUE);
+                }
+            }
+        }
+        break;
+    case AD_FIRE:
+        if (mcanseeu && !mtmp.mspec_used && rn2(5)) {
+            if (cancelled) {
+                react = rn1(2, 4); /* "irritated" || "inflamed" */
+            } else {
+                let dmg = d(2, 6), orig_dmg = dmg, lev = mtmp.m_lev;
+
+                pline_mon(mtmp, _("%s attacks you with a fiery gaze!"),
+                          Monnam(mtmp));
+                stop_occupation();
+                if (Fire_resistance()) {
+                    shieldeff(u.ux, u.uy);
+                    pline_The(_("fire doesn't feel hot!"));
+                    monstseesu(M_SEEN_FIRE);
+                    ugolemeffects(AD_FIRE, d(12, 6));
+                    dmg = 0;
+                } else {
+                    monstunseesu(M_SEEN_FIRE);
+                }
+                burn_away_slime();
+                if (lev > rn2(20))
+                    burnarmor(gy.youmonst);
+                if (lev > rn2(20)) {
+                    destroy_items(gy.youmonst, AD_FIRE, orig_dmg);
+                    ignite_items(gi.invent);
+                }
+                if (dmg)
+                    mdamageu(mtmp, dmg);
+            }
+        }
+        break;
+    /* #ifdef PM_BEHOLDER: not in this build */
+
+    default:
+        impossible(_("Gaze attack %d?"), mattk.adtyp);
+        break;
+    }
+    if (react >= 0) {
+        if (Hallucination() && rn2(3))
+            react = rn2(SIZE(reactions));
+        /* cancelled/hallucinatory feedback; monster might look "confused",
+           "stunned",&c but we don't actually set corresponding attribute */
+        pline_mon(mtmp, _("%s looks %s%s."), Monnam(mtmp),
+              !rn2(3) ? _("") : already ? _("quite ")
+                                     : (!rn2(2) ? _("a bit ") : _("somewhat ")),
+              reactions[react]);
+    }
+    return M_ATTK_MISS;
+}
+
+/* mtmp hits you for n points damage */
+export function mdamageu(mtmp, n) { /* void */
+    if (n < 0) {
+        impossible(_("mdamageu for negative damage? (%d)"), n);
+        n = 0;
+    }
+
+    disp.botl = TRUE;
+    if (Upolyd()) {
+        u.mh -= n;
+        showdamage(n);
+        /* caller might have reduced mhmax before calling mdamageu() */
+        if (u.mh > u.mhmax)
+            u.mh = u.mhmax;
+        if (u.mh < 1)
+            rehumanize();
+    } else {
+        u.uhp -= n;
+        showdamage(n);
+        /* caller might have reduced uhpmax before calling mdamageu() */
+        if (u.uhp > u.uhpmax)
+            u.uhp = u.uhpmax;
+        if (u.uhp < 1)
+            done_in_by(mtmp, DIED);
+    }
+}
+
+/* returns 0 if seduction impossible,
+ *         1 if fine,
+ *         2 if wrong gender for nymph
+ */
+export function could_seduce(
+    magr, mdef,
+    mattk) { /* int */ /* non-Null: current atk; Null: genrl capability */
+    let pagr;
+    let agrinvis, defperc;
+    let genagr, gendef;
+    let adtyp;
+
+    if (is_animal(magr.data))
+        return 0;
+    if (magr == gy.youmonst) {
+        pagr = gy.youmonst.data;
+        agrinvis = +(Invis() != 0);
+        genagr = poly_gender();
+    } else {
+        pagr = magr.data;
+        agrinvis = magr.minvis;
+        genagr = gender(magr);
+    }
+    if (mdef == gy.youmonst) {
+        defperc = +(See_invisible() != 0);
+        gendef = poly_gender();
+    } else {
+        defperc = perceives(mdef.data);
+        gendef = gender(mdef);
+    }
+
+    adtyp = mattk ? mattk.adtyp
+            : dmgtype(pagr, AD_SSEX) ? AD_SSEX
+              : dmgtype(pagr, AD_SEDU) ? AD_SEDU
+                : AD_PHYS;
+    if (adtyp == AD_SSEX && !SYSOPT_SEDUCE())
+        adtyp = AD_SEDU;
+
+    if (agrinvis && !defperc && adtyp == AD_SEDU)
+        return 0;
+
+    /* nymphs have two attacks, one for steal-item damage and the other
+       for seduction, both pass the could_seduce() test;
+       incubi/succubi have three attacks, their claw attacks for damage
+       don't pass the test */
+    if ((pagr.mlet != S_NYMPH && pagr != mons[PM_AMOROUS_DEMON])
+        || (adtyp != AD_SEDU && adtyp != AD_SSEX && adtyp != AD_SITM))
+        return 0;
+
+    return (genagr == 1 - gendef) ? 1 : (pagr.mlet == S_NYMPH) ? 2 : 0;
+}
+
+/* returns 1 if monster teleported (or hero leaves monster's vicinity) */
+export function doseduce(mon) { /* int */
+    const $frame = stack_frame(); try {
+    let ring, nring;
+    let fem = +(mon.data == mons[PM_AMOROUS_DEMON]
+                   && Mgender(mon) == FEMALE); /* otherwise incubus */
+    let seewho, naked; /* True iff no armor */
+    let attr_tot, tried_gloves = 0;
+    let qbuf = stack_array(char, QBUFSZ), Who = stack_array(char, QBUFSZ);
+
+    if (mon.mcan || mon.mspec_used) {
+        pline_mon(mon, _("%s acts as though %s has got a %sheadache."),
+                  Monnam(mon), mhe(mon), mon.mcan ? _("severe ") : _(""));
+        return 0;
+    }
+    if (unresponsive()) {
+        pline_mon(mon, _("%s seems dismayed at your lack of response."),
+                  Monnam(mon));
+        return 0;
+    }
+    seewho = canseemon(mon);
+    if (!seewho)
+        pline(_("Someone caresses you..."));
+    else
+        You_feel(_("very attracted to %s."), mon_nam(mon));
+    /* cache the seducer's name in a local buffer */
+    strcpy(Who, (!seewho ? (fem ? _("She") : _("He")) : Monnam(mon)));
+
+    /* if in the process of putting armor on or taking armor off,
+       interrupt that activity now */
+    stop_donning(null);
+    /* don't try to take off gloves if cursed weapon blocks them */
+    if (welded(uwep))
+        tried_gloves = 1;
+
+    for (ring = gi.invent; ring; ring = nring) {
+        nring = ring.nobj;
+        if (ring.otyp != RIN_ADORNMENT)
+            continue;
+        if (fem) {
+            if (ring.owornmask && uarmg) {
+                /* don't take off worn ring if gloves are in the way */
+                if (!tried_gloves++)
+                    mayberem(mon, Who, uarmg, _("gloves"));
+                if (uarmg)
+                    continue; /* next ring might not be worn */
+            }
+            /* confirmation prompt when charisma is high bypassed if deaf */
+            if (!Deaf() && rn2(20) < ACURR(A_CHA)) {
+                safe_qbuf(qbuf, _("\"That "),
+                                 _(" looks pretty.  May I have it?\""), ring,
+                                 xname, simpleonames, _("ring"));
+                makeknown(RIN_ADORNMENT);
+                   ;
+                if (y_n(qbuf) == ord('n'))
+                    continue;
+            } else
+                pline(_("%s decides she'd like %s, and takes it."),
+                      Who, yname(ring));
+            makeknown(RIN_ADORNMENT);
+            /* might be in left or right ring slot or weapon/alt-wep/quiver */
+            if (ring.owornmask)
+                remove_worn_item(ring, FALSE);
+            freeinv(ring);
+            mpickobj(mon, ring);
+        } else {
+            if (uleft && uright && uleft.otyp == RIN_ADORNMENT
+                && uright.otyp == RIN_ADORNMENT)
+                break;
+            if (ring == uleft || ring == uright)
+                continue;
+            if (uarmg) {
+                /* don't put on ring if gloves are in the way */
+                if (!tried_gloves++)
+                    mayberem(mon, Who, uarmg, _("gloves"));
+                if (uarmg)
+                    break; /* no point trying further rings */
+            }
+            /* confirmation prompt when charisma is high bypassed if deaf */
+            if (!Deaf() && rn2(20) < ACURR(A_CHA)) {
+                safe_qbuf(qbuf, _("\"That "),
+                                _(" looks pretty.  Would you wear it for me?\""),
+                                 ring, xname, simpleonames, _("ring"));
+                makeknown(RIN_ADORNMENT);
+                   ;
+                if (y_n(qbuf) == ord('n'))
+                    continue;
+            } else {
+                pline(_("%s decides you'd look prettier wearing %s,"),
+                      Who, yname(ring));
+                pline(_("and puts it on your finger."));
+            }
+            makeknown(RIN_ADORNMENT);
+            if (!uright) {
+                pline(_("%s puts %s on your right %s."),
+                      Who, the(xname(ring)), body_part(HAND));
+                setworn(ring, RIGHT_RING);
+            } else if (!uleft) {
+                pline(_("%s puts %s on your left %s."),
+                      Who, the(xname(ring)), body_part(HAND));
+                setworn(ring, LEFT_RING);
+            } else if (uright && uright.otyp != RIN_ADORNMENT) {
+                /* note: the "replaces" message might be inaccurate if
+                   hero's location changes and the process gets interrupted,
+                   but trying to figure that out in advance in order to use
+                   alternate wording is not worth the effort */
+                pline(_("%s replaces %s with %s."),
+                      Who, yname(uright), yname(ring));
+                Ring_gone(uright);
+                /* ring removal might cause loss of levitation which could
+                   drop hero onto trap that transports hero somewhere else */
+                if (u.utotype || !m_next2u(mon))
+                    return 1;
+                setworn(ring, RIGHT_RING);
+            } else if (uleft && uleft.otyp != RIN_ADORNMENT) {
+                /* see "replaces" note above */
+                pline(_("%s replaces %s with %s."),
+                      Who, yname(uleft), yname(ring));
+                Ring_gone(uleft);
+                if (u.utotype || !m_next2u(mon))
+                    return 1;
+                setworn(ring, LEFT_RING);
+            } else
+                impossible(_("ring replacement"));
+            Ring_on(ring);
+            prinv(0, ring, 0);
+        }
+    }
+
+    naked = +(!uarmc && !uarmf && !uarmg && !uarms && !uarmh && !uarmu);
+    urgent_pline(_("%s %s%s."), Who,
+                 Deaf() ? _("seems to murmur into your ear")
+                 : naked ? _("murmurs sweet nothings into your ear")
+                   : _("murmurs in your ear"),
+                 naked ? _("") : _(", while helping you undress"));
+    mayberem(mon, Who, uarmc, cloak_simple_name(uarmc));
+    if (!uarmc)
+        mayberem(mon, Who, uarm, suit_simple_name(uarm));
+    mayberem(mon, Who, uarmf, _("boots"));
+    if (!tried_gloves)
+        mayberem(mon, Who, uarmg, _("gloves"));
+    mayberem(mon, Who, uarms, _("shield"));
+    mayberem(mon, Who, uarmh, helm_simple_name(uarmh));
+    if (!uarmc && !uarm)
+        mayberem(mon, Who, uarmu, _("shirt"));
+
+    /* removing armor (levitation boots, or levitation ring to make
+       room for adornment ring with incubus case) might result in the
+       hero falling through a trap door or landing on a teleport trap
+       and changing location, so hero might not be adjacent to seducer
+       any more (mayberem() has its own adjacency test so we don't need
+       to check after each potential removal) */
+    if (u.utotype || !m_next2u(mon))
+        return 1;
+
+    if (uarm || uarmc) {
+        if (!Deaf()) {
+            if (!(ld() && mon.female)) {
+                   ;
+                verbalize(_("You're such a %s; I wish..."),
+                          flags.female ? _("sweet lady") : _("nice guy"));
+            } else {
+                let yourgloves = u_carried_gloves();
+
+                /* have her call your gloves by their correct
+                   name, possibly revealing them to you */
+                if (yourgloves)
+                    observe_object(yourgloves);
+                verbalize(_("Well, then you owe me %s%s!"),
+                          yourgloves ? yname(yourgloves)
+                                     : _("twelve pairs of gloves"),
+                          yourgloves ? _(" and eleven more pairs of gloves")
+                                     : _(""));
+            }
+        } else if (seewho)
+            pline_mon(mon, _("%s appears to sigh."), Monnam(mon));
+        /* else no regret message if can't see or hear seducer */
+
+        if (!tele_restrict(mon))
+            rloc(mon, RLOC_MSG);
+        return 1;
+    }
+    if (u.ualign.type == A_CHAOTIC)
+        adjalign(1);
+
+    /* by this point you have discovered mon's identity, blind or not... */
+    urgent_pline(
+             _("Time stands still while you and %s lie in each other's arms..."),
+                 noit_mon_nam(mon));
+    /* 3.6.1: a combined total for charisma plus intelligence of 35-1
+       used to guarantee successful outcome; now total maxes out at 32
+       as far as deciding what will happen; chance for bad outcome when
+       Cha+Int is 32 or more is 2/35, a bit over 5.7% */
+    attr_tot = ACURR(A_CHA) + ACURR(A_INT);
+    if (rn2(35) > min(attr_tot, 32)) {
+        /* Don't bother with mspec_used here... it didn't get tired! */
+        pline(_("%s seems to have enjoyed it more than you..."),
+              noit_Monnam(mon));
+        switch (rn2(5)) {
+        case 0:
+            You_feel(_("drained of energy."));
+            u.uen = 0;
+            u.uenmax -= rnd(Half_physical_damage() ? 5 : 10);
+            exercise(A_CON, FALSE);
+            if (u.uenmax < 0)
+                u.uenmax = 0;
+            break;
+        case 1:
+            You(_("are down in the dumps."));
+            adjattrib(A_CON, -1, TRUE);
+            exercise(A_CON, FALSE);
+            disp.botl = TRUE;
+            break;
+        case 2:
+            Your(_("senses are dulled."));
+            adjattrib(A_WIS, -1, TRUE);
+            exercise(A_WIS, FALSE);
+            disp.botl = TRUE;
+            break;
+        case 3:
+            if (!resists_drli(gy.youmonst)) {
+                You_feel(_("out of shape."));
+                losexp(_("overexertion"));
+            } else {
+                You(_("have a curious feeling..."));
+            }
+            exercise(A_CON, FALSE);
+            exercise(A_DEX, FALSE);
+            exercise(A_WIS, FALSE);
+            break;
+        case 4: {
+            let tmp;
+
+            You_feel(_("exhausted."));
+            exercise(A_STR, FALSE);
+            tmp = rn1(10, 6);
+            losehp(Maybe_Half_Phys(tmp), _("exhaustion"), KILLED_BY);
+            break;
+        } /* case 4 */
+        } /* switch */
+    } else {
+        mon.mspec_used = rnd(100); /* monster is worn out */
+        You(_("seem to have enjoyed it more than %s..."), noit_mon_nam(mon));
+        switch (rn2(5)) {
+        case 0:
+            You_feel(_("raised to your full potential."));
+            exercise(A_CON, TRUE);
+            u.uen = (u.uenmax += rnd(5));
+            if (u.uenmax > u.uenpeak)
+                u.uenpeak = u.uenmax;
+            break;
+        case 1:
+            You_feel(_("good enough to do it again."));
+            adjattrib(A_CON, 1, TRUE);
+            exercise(A_CON, TRUE);
+            disp.botl = TRUE;
+            break;
+        case 2:
+            You(_("will always remember %s..."), noit_mon_nam(mon));
+            adjattrib(A_WIS, 1, TRUE);
+            exercise(A_WIS, TRUE);
+            disp.botl = TRUE;
+            break;
+        case 3:
+            pline(_("That was a very educational experience."));
+            pluslvl(FALSE);
+            exercise(A_WIS, TRUE);
+            break;
+        case 4:
+            You_feel(_("restored to health!"));
+            u.uhp = u.uhpmax;
+            if (Upolyd())
+                u.mh = u.mhmax;
+            exercise(A_STR, TRUE);
+            disp.botl = TRUE;
+            break;
+        }
+    }
+
+    if (mon.mtame) { /* don't charge */
+        ;
+    } else if (rn2(20) < ACURR(A_CHA)) {
+        pline(_("%s demands that you pay %s, but you refuse..."),
+              noit_Monnam(mon), noit_mhim(mon));
+    } else if (u.umonnum == PM_LEPRECHAUN) {
+        pline_mon(mon, _("%s tries to take your gold, but fails..."),
+                  noit_Monnam(mon));
+    } else {
+        let cost;
+        let umoney = money_cnt(gi.invent);
+
+        if (umoney > LARGEST_INT - 10)
+            cost = rnd(LARGEST_INT) + 500;
+        else
+            cost = rnd(int(umoney) + 10) + 500;
+        if (mon.mpeaceful) {
+            cost = Math.trunc(cost / 5);
+            if (!cost)
+                cost = 1;
+        }
+        if (cost > umoney)
+            cost = umoney;
+        if (!cost) {
+            if (!Deaf()) {
+                   ;
+                verbalize(_("It's on the house!"));
+            } else {
+                pline(_("No charge."));
+            }
+        } else {
+            pline_mon(mon, _("%s takes %lld %s for services rendered!"),
+                      noit_Monnam(mon), cost, currency(cost));
+            money2mon(mon, cost);
+            disp.botl = TRUE;
+        }
+    }
+    if (!rn2(25))
+        mon.mcan = 1; /* monster is worn out */
+    if (!tele_restrict(mon))
+        rloc(mon, RLOC_MSG);
+    return 1;
+    } finally { stack_pop($frame); }
+}
+
+/* 'mon' tries to remove a piece of hero's armor */
+function mayberem(mon,
+         seducer,
+         obj, str) { /* void */
+    const $frame = stack_frame(); try {
+    let qbuf = stack_array(char, QBUFSZ);
+
+    if (!obj || !obj.owornmask)
+        return;
+    /* removal of a previous item might have sent the hero elsewhere
+       (loss of levitation that leads to landing on a transport trap) */
+    if (u.utotype || !m_next2u(mon))
+        return;
+
+    /* being deaf overrides confirmation prompt for high charisma */
+    if (Deaf()) {
+        pline(_("%s takes off your %s."), seducer, str);
+    } else if (rn2(20) < ACURR(A_CHA)) {
+           ; /* y_n aka yn_function is set up for this */
+        sprintf(qbuf, _("\"Shall I remove your %s, %s?\""), str, (!rn2(2) ? _("lover") : !rn2(2) ? _("dear") : _("sweetheart")))
+;
+        if (y_n(qbuf) == ord('n'))
+            return;
+    } else {
+        let hairbuf = stack_array(char, BUFSZ);
+
+        sprintf(hairbuf, _("let me run my fingers through your %s"), body_part(HAIR))
+;
+           ;
+        verbalize(_("Take off your %s; %s."), str,
+                  (obj == uarm)
+                     ? _("let's get a little closer")
+                     : (obj == uarmc || obj == uarms)
+                        ? _("it's in the way")
+                        : (obj == uarmf)
+                           ? _("let me rub your feet")
+                           : (obj == uarmg)
+                              ? _("they're too clumsy")
+                              : (obj == uarmu)
+                                 ? _("let me massage you")
+                                 /* obj == uarmh */
+                                 : hairbuf);
+    }
+    remove_worn_item(obj, TRUE);
+    } finally { stack_pop($frame); }
+}
+
+function assess_dmg(mtmp, tmp) { /* int */
+    if ((mtmp.mhp -= tmp) <= 0) {
+        pline_mon(mtmp, _("%s dies!"), Monnam(mtmp));
+        xkilled(mtmp, XKILL_NOMSG);
+        if (!DEADMONSTER(mtmp))
+            return M_ATTK_HIT;
+        return M_ATTK_AGR_DIED;
+    }
+    return M_ATTK_HIT;
+}
+
+/* #if 0: not in this build */
+
+/* can be used as ranged_attk_assessed() callback.
+   Returns TRUE if monster is avoiding use of this attack */
+export function mon_avoiding_this_attack(
+    mtmp,
+    attkidx) { /* boolean */
+    let ptr = mtmp.data;
+    let typ = -1;
+
+    if (attkidx >= 0
+        && (typ = get_atkdam_type(ptr.mattk[attkidx].adtyp)) >= 0
+        && m_seenres(mtmp, cvt_adtyp_to_mseenres(uchar(typ))))
+        return TRUE;
+    return FALSE;
+}
+
+/*
+ * This would be equivalent to:
+ *     ranged_attk_assessed(mtmp, mon_avoiding_this_attack)
+ * but without the added assessment function call overhead.
+ */
+export function ranged_attk_available(mtmp) { /* boolean */
+    let i, typ = -1;
+    let ptr = mtmp.data;
+
+    for (i = 0; i < NATTK; i++) {
+        if (DISTANCE_ATTK_TYPE(ptr.mattk[i].aatyp)
+            && (typ = get_atkdam_type(ptr.mattk[i].adtyp)) >= 0
+                && m_seenres(mtmp, cvt_adtyp_to_mseenres(uchar(typ))) == 0)
+                return TRUE;
+    }
+    return FALSE;
+}
+
+/* FIXME:
+ *  sequencing issue:  a monster's attack might cause poly'd hero
+ *  to revert to normal form.  The messages for passive counterattack
+ *  would look better if they came before reverting form, but we need
+ *  to know whether hero reverted in order to decide whether passive
+ *  damage applies.
+ */
+function passiveum(
+    olduasmon,
+    mtmp,
+    mattk) { /* int */
+    let i, tmp;
+    let oldu_mattk = null;
+
+    /*
+     * mattk      == mtmp's attack that hit you;
+     * oldu_mattk == your passive counterattack (even if mtmp's attack
+     *               has already caused you to revert to normal form).
+     */
+    for (i = 0; !oldu_mattk; i++) {
+        if (i >= NATTK)
+            return M_ATTK_HIT;
+        if (olduasmon.mattk[i].aatyp == AT_NONE
+            || olduasmon.mattk[i].aatyp == AT_BOOM)
+            oldu_mattk = olduasmon.mattk[i];
+    }
+    if (oldu_mattk.damn)
+        tmp = d(oldu_mattk.damn, oldu_mattk.damd);
+    else if (oldu_mattk.damd)
+        tmp = d(olduasmon.mlevel + 1, oldu_mattk.damd);
+    else
+        tmp = 0;
+
+    /* These affect the enemy even if you were "killed" (rehumanized) */
+    switch (oldu_mattk.adtyp) {
+    case AD_ACID:
+        if (!rn2(2)) {
+            pline_mon(mtmp, _("%s is splashed by %s%s!"), Monnam(mtmp),
+                  /* temporary? hack for sequencing issue:  "your acid"
+                     looks strange coming immediately after player has
+                     been told that hero has reverted to normal form */
+                  !Upolyd() ? _("") : _("your "), hliquid(_("acid")));
+            if (resists_acid(mtmp)) {
+                pline_mon(mtmp, _("%s is not affected."), Monnam(mtmp));
+                tmp = 0;
+            }
+        } else
+            tmp = 0;
+        if (!rn2(30))
+            erode_armor(mtmp, ERODE_CORRODE);
+        if (!rn2(6))
+            acid_damage(MON_WEP(mtmp));
+        return assess_dmg(mtmp, tmp);
+    case AD_STON: /* cockatrice */
+    {
+        let protector = attk_protection(mattk.aatyp),
+             wornitems = mtmp.misc_worn_check;
+
+        /* wielded weapon gives same protection as gloves here */
+        if (MON_WEP(mtmp) != null)
+            wornitems = or64(wornitems, W_ARMG);
+
+        if (!resists_ston(mtmp)
+            && (protector == 0
+                || (protector != ~0
+                    && and64(wornitems, protector) != protector))) {
+            if (poly_when_stoned(mtmp.data)) {
+                mon_to_stone(mtmp);
+                return 1;
+            }
+            pline_mon(mtmp, _("%s turns to stone!"), Monnam(mtmp));
+            gs.stoned = 1;
+            xkilled(mtmp, XKILL_NOMSG);
+            if (!DEADMONSTER(mtmp))
+                return M_ATTK_HIT;
+            return M_ATTK_AGR_DIED;
+        }
+        return M_ATTK_HIT;
+    }
+    case AD_ENCH: /* KMH -- remove enchantment (disenchanter) */
+        if (mon_currwep[0]) {
+            /* by_you==True: passive counterattack to hero's action
+               is hero's fault */
+            drain_item(mon_currwep[0], TRUE);
+            /* No message */
+        }
+        return M_ATTK_HIT;
+    default:
+        break;
+    }
+    if (!Upolyd())
+        return M_ATTK_HIT;
+
+    /* These affect the enemy only if you are still a monster */
+    if (rn2(3))
+        switch (oldu_mattk.adtyp) {
+        case AD_PHYS:
+            if (oldu_mattk.aatyp == AT_BOOM) {
+                You(_("explode!"));
+                /* KMH, balance patch -- this is okay with unchanging */
+                rehumanize();
+                return assess_dmg(mtmp, tmp);
+            }
+            break;
+        case AD_PLYS: /* Floating eye */
+            if (tmp > 127)
+                tmp = 127;
+            if (u.umonnum == PM_FLOATING_EYE) {
+                if (!rn2(4))
+                    tmp = 127;
+                if (mtmp.mcansee && haseyes(mtmp.data) && rn2(3)
+                    && (perceives(mtmp.data) || !Invis())) {
+                    if (Blind()) {
+                        pline(_("As a blind %s, you cannot defend yourself."),
+                              pmname(gy.youmonst.data,
+                                     flags.female ? FEMALE : MALE));
+                    } else {
+                        if (mon_reflects(mtmp,
+                                         _("Your gaze is reflected by %s %s.")))
+                            return 1;
+                        pline_mon(mtmp, _("%s is frozen by your gaze!"),
+                                  Monnam(mtmp));
+                        paralyze_monst(mtmp, tmp);
+                        return M_ATTK_AGR_DONE;
+                    }
+                }
+            } else { /* gelatinous cube */
+                pline_mon(mtmp, _("%s is frozen by you."), Monnam(mtmp));
+                paralyze_monst(mtmp, tmp);
+                return M_ATTK_AGR_DONE;
+            }
+            return M_ATTK_HIT;
+        case AD_COLD: /* Brown mold or blue jelly */
+            if (resists_cold(mtmp)) {
+                shieldeff(mtmp.mx, mtmp.my);
+                pline_mon(mtmp, _("%s is mildly chilly."), Monnam(mtmp));
+                golemeffects(mtmp, AD_COLD, tmp);
+                tmp = 0;
+                break;
+            }
+            pline_mon(mtmp, _("%s is suddenly very cold!"), Monnam(mtmp));
+            u.mh += Math.trunc((tmp + rn2(2)) / 2);
+            if (u.mhmax < u.mh)
+                u.mhmax = u.mh;
+            if (u.mhmax > ((gy.youmonst.data.mlevel + 1) * 8))
+                split_mon(gy.youmonst, mtmp);
+            break;
+        case AD_STUN: /* Yellow mold */
+            if (!mtmp.mstun) {
+                mtmp.mstun = 1;
+                pline_mon(mtmp, _("%s %s."), Monnam(mtmp),
+                      makeplural(stagger(mtmp.data, _("stagger"))));
+            }
+            tmp = 0;
+            break;
+        case AD_FIRE: /* Red mold */
+            if (resists_fire(mtmp)) {
+                shieldeff(mtmp.mx, mtmp.my);
+                pline_mon(mtmp, _("%s is mildly warm."), Monnam(mtmp));
+                golemeffects(mtmp, AD_FIRE, tmp);
+                tmp = 0;
+                break;
+            }
+            pline_mon(mtmp, _("%s is suddenly very hot!"), Monnam(mtmp));
+            break;
+        case AD_ELEC:
+            if (resists_elec(mtmp)) {
+                shieldeff(mtmp.mx, mtmp.my);
+                pline_mon(mtmp, _("%s is slightly tingled."), Monnam(mtmp));
+                golemeffects(mtmp, AD_ELEC, tmp);
+                tmp = 0;
+                break;
+            }
+            pline_mon(mtmp, _("%s is jolted with your electricity!"),
+                      Monnam(mtmp));
+            break;
+        default:
+            tmp = 0;
+            break;
+        }
+    else
+        tmp = 0;
+
+    return assess_dmg(mtmp, tmp);
+}
+
+export function cloneu() { /* struct monst * */
+    let mon;
+    let mndx = monsndx(gy.youmonst.data);
+
+    if (u.mh <= 1)
+        return null;
+    if (svm.mvitals[mndx].mvflags & G_EXTINCT)
+        return null;
+    mon = makemon(gy.youmonst.data, u.ux, u.uy,
+                  NO_MINVENT | MM_EDOG | MM_NOMSG);
+    if (!mon)
+        return null;
+    mon.mcloned = 1;
+    mon = christen_monst(mon, svp.plname);
+    initedog(mon, TRUE);
+    mon.m_lev = uchar(gy.youmonst.data.mlevel);
+    mon.mhpmax = u.mhmax;
+    mon.mhp = Math.trunc(u.mh / 2);
+    u.mh -= mon.mhp;
+    disp.botl = TRUE;
+    return mon;
+}
+
+/*mhitu.c*/
+
+import { A_CHAOTIC } from "./align.h.js";
+import { ART_SNICKERSNEE, ART_STORMBRINGER, ART_VORPAL_BLADE } from "./artilist.h.js";
+import { A_CHA, A_CON, A_DEX, A_INT, A_STR, A_WIS } from "./attrib.h.js";
+import { ACURR } from "./attrib.h.macros.js";
+import { struct_nhcoord } from "./coord.h.js";
+import { Something, something, vision_clears } from "./decl.h.macros.js";
+import { S_EEL, S_MIMIC, S_NYMPH, S_PIERCER, WEAPON_CLASS } from "./defsym.h.js";
+import { canspotmon } from "./display.h.macros.js";
+import { Inhell, Is_rogue_level } from "./dungeon.h.macros.js";
+import { BUFSZ, FALSE, LARGEST_INT, QBUFSZ, TRUE, boolean } from "./global.h.js";
+import {
+    BOLT_LIM, DIED, DISMOUNT_ENGULFED, HAIR, HAND, KILLED_BY, MM_EDOG, MM_NOMSG, NO_MINVENT,
+    RLOC_MSG, RLOC_NOMSG, STONING, TELEDS_ALLOW_DRAG, XKILL_NOMSG,
+} from "./hack.h.js";
+import {
+    AC_VALUE, Maybe_Half_Phys, Your1, makeknown, max, mdistu, min, rn1, y_n,
+} from "./hack.h.macros.js";
+import {
+    AD_ACID, AD_ANY, AD_BLND, AD_COLD, AD_CONF, AD_DGST, AD_DISE, AD_DREN, AD_DRIN, AD_DRLI,
+    AD_ELEC, AD_ENCH, AD_FAMN, AD_FIRE, AD_HALU, AD_PEST, AD_PHYS, AD_PLYS, AD_POLY, AD_SEDU,
+    AD_SITM, AD_SSEX, AD_STCK, AD_STON, AD_STUN, AD_WRAP, AT_BITE, AT_BOOM, AT_BREA, AT_BUTT,
+    AT_CLAW, AT_ENGL, AT_EXPL, AT_GAZE, AT_HUGS, AT_KICK, AT_MAGC, AT_NONE, AT_SPIT, AT_STNG,
+    AT_TENT, AT_TUCH, AT_WEAP, M_ATTK_AGR_DIED, M_ATTK_AGR_DONE, M_ATTK_DEF_DIED, M_ATTK_HIT,
+    M_ATTK_MISS, struct_mhitm_data,
+} from "./monattk.h.js";
+import { DISTANCE_ATTK_TYPE } from "./monattk.h.macros.js";
+import {
+    amorphous, amphibious, digests, enfolds, flaming, haseyes, hides_under, is_animal, is_demon,
+    is_hider, is_human, is_minion, is_orc, is_swimmer, is_undead, is_were, is_whirly, likes_gold,
+    monsndx, nolimbs, perceives, thick_skinned, touch_petrifies, unsolid,
+} from "./mondata.h.macros.js";
+import { FEMALE, G_EXTINCT, MALE, MZ_HUGE, NEUTRAL } from "./monflag.h.js";
+import {
+    M_AP_NOTHING, M_AP_OBJECT, M_SEEN_ACID, M_SEEN_COLD, M_SEEN_ELEC, M_SEEN_FIRE, NEED_HTH_WEAPON,
+    NEED_WEAPON,
+} from "./monst.h.js";
+import {
+    DEADMONSTER, MON_WEP, U_AP_TYPE, is_vampshifter, m_seenres, resists_acid, resists_cold,
+    resists_elec, resists_fire, resists_ston,
+} from "./monst.h.macros.js";
+import {
+    NON_PM, PM_ALIGNED_CLERIC, PM_AMOROUS_DEMON, PM_ARCHON, PM_BALROG, PM_BLACK_LIGHT, PM_CLERIC,
+    PM_FLOATING_EYE, PM_FOG_CLOUD, PM_HIGH_CLERIC, PM_LEPRECHAUN, PM_MEDUSA, PM_SHADE,
+    PM_STONE_GOLEM, PM_TRAPPER, PM_VIOLET_FUNGUS,
+} from "./monsters.h.js";
+import { ERODE_CORRODE, OBJ_FREE, struct_obj } from "./obj.h.js";
+import { is_pole, is_weptool, is_wet_towel } from "./obj.h.macros.js";
+import { PIERCE } from "./objclass.h.js";
+import {
+    AMULET_OF_GUARDING, BOULDER, CORPSE, EGG, GOLD_PIECE, OILSKIN_CLOAK, RIN_ADORNMENT,
+} from "./objects.h.js";
+import { NATTK, struct_attack } from "./permonst.h.js";
+import {
+    BLINDED, FAST, LEFT_RING, RIGHT_RING, TIMEOUT, WORN_HELMET, W_ACCESSORY, W_AMUL, W_ARMG,
+    W_ARMOR, W_WEP,
+} from "./prop.h.js";
+import { m_at, remove_monster } from "./rm.h.macros.js";
+import { P_WHIP } from "./skills.h.js";
+import { SYSOPT_SEDUCE } from "./sys.h.macros.js";
+import { is_pit } from "./trap.h.macros.js";
+import { cansee, couldsee, m_canseeu } from "./vision.h.macros.js";
+import { display_nhwindow } from "./winprocs.h.macros.js";
+import { SICK_NONVOMITABLE, TT_PIT, TT_WEB } from "./you.h.js";
+import { Role_if, Ugender, Upolyd, m_next2u, mhe, mhis, noit_mhim, u_at } from "./you.h.macros.js";
+import {
+    Acid_resistance, Amphibious, Blind, Blinded, Breathless, Cold_resistance, Conflict, Confusion,
+    Deaf, Detect_monsters, Displaced, EProtection, Fast, Fire_resistance, HConfusion,
+    HHallucination, HProtection, HStun, Half_physical_damage, Hallucination, Invis,
+    Protection_from_shape_changers, Punished, Reflecting, See_invisible, Shock_resistance, Sick,
+    Sick_resistance, Slow_digestion, Stone_resistance, Unaware, Underwater,
+} from "./youprop.h.macros.js";
+import { SIZE } from "../rt/cmacros.js";
+import { char, int, ord, uchar, unsigned } from "../rt/ctypes.js";
+import { chars, stack_frame, stack_pop } from "../rt/heap.js";
+import { and64, or64 } from "../rt/int64.js";
+import { sprintf, strcmp, strcpy } from "../rt/libc.js";
+import { stack_array, stack_struct, stack_var, static_array, static_var } from "../rt/locals.js";
+import { _ } from "../rt/strings.js";
+import { addr_of, elt, ptr_add, ptr_to, ref_of, struct_assign } from "../rt/struct.js";
+import { stop_occupation } from "./allmain.js";
+import { number_leashed, snuff_lit, um_dist, unleash_all } from "./apply.js";
+import { is_art, protects } from "./artifact.js";
+import { adjalign, adjattrib, exercise, minuhpmax } from "./attrib.js";
+import { placebc, unplacebc } from "./ball.js";
+import { bot } from "./botl.js";
+import { getyear, midnight, night, yyyymmdd } from "./calendar.js";
+import { reset_occupations } from "./cmd.js";
+import { is_pool, is_waterwall } from "./dbridge.js";
+import { disp, flags, gb, gh, gi, gm, gn, gs, gy, svk, svl, svm, svp, u } from "./decl.js";
+import {
+    canseemon, flush_screen, map_invisible, mon_visible, newsym, sensemon, shieldeff, swallowed,
+    tp_sensemon,
+} from "./display.js";
+import {
+    Amonnam, Mgender, Monnam, Some_Monnam, christen_monst, hliquid, m_monnam, mon_nam, noit_Monnam,
+    noit_mon_nam, pmname,
+} from "./do_name.js";
+import { Ring_gone, Ring_on, hard_helmet, stop_donning } from "./do_wear.js";
+import { initedog } from "./dog.js";
+import { ceiling } from "./dungeon.js";
+import { done, done_in_by } from "./end.js";
+import { losexp, pluslvl } from "./exper.js";
+import { mon_explodes } from "./explode.js";
+import { losehp, money_cnt, nomul, showdamage, spoteffects, unmul } from "./hack.js";
+import { s_suffix, upstart } from "./hacklib.js";
+import { currency, freeinv, prinv, sobj_at, u_carried_gloves, update_inventory } from "./invent.js";
+import { is_home_elemental, makemon } from "./makemon.js";
+import { buzzmu, castmu } from "./mcastu.js";
+import { attk_protection, engulf_target, failed_grab, mattackm, paralyze_monst } from "./mhitm.js";
+import { msummon } from "./minion.js";
+import {
+    golemeffects, killed, mnexto, mon_to_stone, mondead, monnear, set_ustuck, unstuck, wake_nearto,
+    xkilled,
+} from "./mon.js";
+import {
+    attacktype_fordmg, can_blnd, cvt_adtyp_to_mseenres, defended, dmgtype, gender, get_atkdam_type,
+    mon_hates_blessings, monstseesu, monstunseesu, poly_when_stoned, resists_blnd, resists_drli,
+    stagger, sticks,
+} from "./mondata.js";
+import { set_apparxy } from "./monmove.js";
+import { c_sa_no, mons } from "./monst.js";
+import { breamu, spitmu, thrwmu } from "./mthrowu.js";
+import { find_offensive, mon_reflects, ureflects, use_offensive } from "./muse.js";
+import { observe_object } from "./o_init.js";
+import { objects } from "./objects.js";
+import {
+    an, cloak_simple_name, doname, helm_simple_name, makeplural, mimic_obj_name, safe_qbuf,
+    simpleonames, suit_simple_name, the, vtense, xname, yname,
+} from "./objnam.js";
+import {
+    You, You_cant, You_feel, You_hear, Your, impossible, pline, pline_The, pline_mon, set_msg_xy,
+    urgent_pline, verbalize,
+} from "./pline.js";
+import { body_part, poly_gender, polymon, rehumanize, ugolemeffects } from "./polyself.js";
+import {
+    incr_itimeout, make_blinded, make_confused, make_hallucinated, make_sick, make_stunned,
+    split_mon,
+} from "./potion.js";
+import { is_quest_artifact } from "./questpgr.js";
+import { d, rn2, rnd } from "./rnd.js";
+import { money2mon } from "./shk.js";
+import { growl_sound } from "./sounds.js";
+import { mpickobj, remove_worn_item, unresponsive } from "./steal.js";
+import { dismount_steed, place_monster } from "./steed.js";
+import { enexto, rloc, tele_restrict, teleds } from "./teleport.js";
+import { burn_away_slime } from "./timeout.js";
+import {
+    acid_damage, burnarmor, drain_en, ignite_items, minstapetrify, reset_utrap, t_at,
+} from "./trap.js";
+import { erode_armor, mhitm_adtyping, mhitm_knockback } from "./uhitm.js";
+import { vision_recalc } from "./vision.js";
+import { hitval, mon_wield_item } from "./weapon.js";
+import { new_were, were_summon } from "./were.js";
+import { welded } from "./wield.js";
+import { worm_move } from "./worm.js";
+import { find_mac, setworn, which_armor } from "./worn.js";
+import { destroy_items, drain_item } from "./zap.js";
