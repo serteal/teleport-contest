@@ -1,14 +1,19 @@
+// persistence.js - files that outlive a segment.
+//
+// Save files, bones, the record and the like are carried from one segment
+// to the next through the Web-Storage-shaped `storage` the caller or the
+// browser provides: restorePersistentVfs() fills the game's file system
+// (js/host/vfs.js) before a segment, snapshotPersistentVfs() stores it
+// after.  One storage item per file plus a manifest of the directories and
+// files.  Files are stored as binary strings (one char per byte), so text
+// files such as /record stay readable through storage.js vfsReadFile().
+
 import { InMemoryStorage } from "./storage.js";
+import { binaryToBytes, bytesToBinary, isDir, isFile } from "./host/vfs.js";
 
 const VFS_PREFIX = "vfs:";
 const FS_MANIFEST_PATH = "/.nhjs-fs-manifest.json";
-const SKIP_FS_PATHS = new Set([
-  FS_MANIFEST_PATH,
-  "/.nethackrc",
-  "/rng.log",
-  "/sysconf",
-]);
-const SKIP_FS_PREFIXES = ["/dev", "/proc", "/home"];
+const SKIP_FS_PREFIXES = ["/dev", "/proc", "/tmp", "/home"];
 
 export function storageForInput(input) {
   return input?.storage || new InMemoryStorage();
@@ -18,58 +23,7 @@ function storageKey(path) {
   return `${VFS_PREFIX}${path}`;
 }
 
-function bytesToBase64(bytes) {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
-}
-
-function base64ToBytes(text) {
-  const binary = atob(text || "");
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-function parentDir(path) {
-  if (!path || path === "/") return "/";
-  const idx = path.lastIndexOf("/");
-  return idx <= 0 ? "/" : path.slice(0, idx);
-}
-
-function ensureDir(FS, path) {
-  if (!path || path === "/") return;
-  const parts = path.split("/").filter(Boolean);
-  let cur = "";
-  for (const part of parts) {
-    cur += `/${part}`;
-    try {
-      if (FS.isDir(FS.stat(cur).mode)) continue;
-    } catch {
-      // Create it below.
-    }
-    try {
-      FS.mkdir(cur);
-    } catch {
-      // Another restored path may already have created it.
-    }
-  }
-}
-
-function shouldPersistFsPath(path) {
-  if (!path || path === "/") return false;
-  if (SKIP_FS_PATHS.has(path)) return false;
-  return !SKIP_FS_PREFIXES.some(
-    (prefix) => path === prefix || path.startsWith(`${prefix}/`),
-  );
-}
-
-function readStoredManifest(storage) {
+function readManifest(storage) {
   try {
     const raw = storage.getItem(storageKey(FS_MANIFEST_PATH));
     return raw ? JSON.parse(raw) : null;
@@ -78,83 +32,49 @@ function readStoredManifest(storage) {
   }
 }
 
-export function restorePersistentFs(FS, storage) {
-  const manifest = readStoredManifest(storage);
-  if (!manifest) return;
-  for (const dir of manifest.dirs || []) {
-    if (shouldPersistFsPath(dir)) ensureDir(FS, dir);
+function vfsSkipped(path) {
+  return SKIP_FS_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+/** Files and directories of vfs that can persist, as [path, node], parents first. */
+function persistableNodes(vfs) {
+  const out = [];
+  for (const [path, node] of vfs.walk("/")) {
+    if (vfsSkipped(path)) continue;
+    out.push([path, node]);
   }
+  return out;
+}
+
+export function restorePersistentVfs(vfs, storage) {
+  const manifest = readManifest(storage);
+  if (!manifest) return;
+  for (const dir of manifest.dirs || []) vfs.mkdirTree(dir);
   for (const path of manifest.files || []) {
-    if (!shouldPersistFsPath(path)) continue;
     const raw = storage.getItem(storageKey(path));
-    if (!raw) continue;
-    try {
-      const entry = JSON.parse(raw);
-      ensureDir(FS, parentDir(path));
-      FS.writeFile(path, base64ToBytes(entry.data || ""));
-    } catch {
-      // Ignore malformed persisted entries; the C side will recreate
-      // default runtime files where possible.
-    }
+    if (raw === null) continue;
+    vfs.writeFile(path, binaryToBytes(raw));
   }
 }
 
-export function snapshotPersistentFs(FS, storage) {
-  const previous = readStoredManifest(storage);
+// `skip` holds paths that are reinstalled at every start (game data,
+// sysconf, .nethackrc, the RNG log) and need not be carried over.
+export function snapshotPersistentVfs(vfs, storage, skip = new Set()) {
+  const previous = readManifest(storage);
   const dirs = [];
   const files = [];
-  const liveFiles = new Set();
-
-  function walk(dir) {
-    let entries;
-    try {
-      entries = FS.readdir(dir);
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry === "." || entry === "..") continue;
-      const path = dir === "/" ? `/${entry}` : `${dir}/${entry}`;
-      if (!shouldPersistFsPath(path)) continue;
-      let stat;
-      try {
-        stat = FS.stat(path);
-      } catch {
-        continue;
-      }
-      if (FS.isDir(stat.mode)) {
-        dirs.push(path);
-        walk(path);
-      } else if (FS.isFile(stat.mode)) {
-        try {
-          const data = FS.readFile(path);
-          files.push(path);
-          liveFiles.add(path);
-          storage.setItem(
-            storageKey(path),
-            JSON.stringify({
-              encoding: "base64",
-              data: bytesToBase64(data),
-            }),
-          );
-        } catch {
-          // Non-readable runtime files are not useful across a
-          // segment boundary.
-        }
-      }
+  for (const [path, node] of persistableNodes(vfs)) {
+    if (skip.has(path)) continue;
+    if (isDir(node.mode)) {
+      dirs.push(path);
+    } else if (isFile(node.mode)) {
+      files.push(path);
+      storage.setItem(storageKey(path), bytesToBinary(node.contents.subarray(0, node.usedBytes)));
     }
   }
-
-  walk("/");
-  for (const oldPath of previous?.files || []) {
-    if (!liveFiles.has(oldPath)) storage.removeItem(storageKey(oldPath));
+  const live = new Set(files);
+  for (const old of previous?.files || []) {
+    if (!live.has(old)) storage.removeItem(storageKey(old));
   }
-  storage.setItem(
-    storageKey(FS_MANIFEST_PATH),
-    JSON.stringify({
-      version: 1,
-      dirs,
-      files,
-    }),
-  );
+  storage.setItem(storageKey(FS_MANIFEST_PATH), JSON.stringify({ version: 2, dirs, files }));
 }
